@@ -1,0 +1,458 @@
+# -*- coding: utf-8 -*-
+# Estación espacial paramétrica "Ultra" — FreeCAD Macro
+# Autor: Víctor + Copilot
+# Requisitos: FreeCAD 0.21+ (módulos FreeCAD, Part)
+
+import math
+import FreeCAD as App
+import Part
+
+V = App.Vector
+
+# ===================== Parámetros globales (mm) =====================
+UNITS = "mm"
+
+# Calidad y LOD
+LOD = "MED"   # LOW / MED / HIGH (controla densidad de detalles no críticos)
+
+# Nodo central
+NODE_R = 700.0              # radio externo del nodo (cilindro)
+NODE_L = 1600.0             # longitud del nodo
+NODE_T = 10.0               # espesor de pared
+
+# Módulos presurizados (cilindro + casquetes hemisféricos)
+MOD_HAB_D = 4600.0; MOD_HAB_L = 9000.0; MOD_T = 12.0
+MOD_LAB_D = 4200.0; MOD_LAB_L = 8200.0
+CORR_D    = 2100.0; CORR_L  = 4800.0
+
+# Bridas y puertos (flange + taladros)
+PORT_CLEAR_D = 1200.0
+FLANGE_W     = 280.0        # ancho de anillo
+FLANGE_T     = 24.0         # espesor de brida
+BHC_R        = (PORT_CLEAR_D/2.0) + 70.0  # bolt circle radius
+BHC_N        = 24           # nº de taladros
+BHC_D        = 18.0         # Ø taladro
+BHC_CLR      = 0.5          # holgura
+
+# Truss dorsal (viga cajón + celosía con diagonales)
+TRUSS_L = 26000.0; TRUSS_W = 1200.0; TRUSS_H = 1400.0
+BAY     = 2000.0            # longitud de celda
+IBEAM_F = 18.0; IBEAM_TW = 14.0; IBEAM_HW = 260.0   # perfil I
+
+# Radiadores
+RAD_W = 5200.0; RAD_H = 9800.0; RAD_T = 60.0
+RAD_OFFSET_Y = 1800.0
+MANIFOLD_D = 180.0; MANIFOLD_T = 6.0
+
+# Paneles solares (ala única por lado con gimbal)
+GIMBAL_R = 360.0; GIMBAL_L = 1300.0
+YOKE_L = 1400.0; YOKE_W = 380.0; YOKE_T = 28.0
+SA_SPAN = 36000.0; SA_CHORD = 3200.0; SA_T = 60.0
+SA_STRINGER_W = 40.0; SA_STRINGER_T = 12.0; SA_STRINGERS = 14
+
+# Antenas
+HGA_D = 3200.0; HGA_DEPTH = 520.0; HGA_BOOM_L = 2800.0; HGA_BOOM_D = 210.0
+MGA_R = 900.0;  MGA_H = 260.0
+
+# RCS (propulsores)
+RCS_CONE_D = 220.0; RCS_CONE_L = 280.0
+RCS_THRUSTERS_PER_QUAD = 4
+RCS_OFFSET = 900.0
+
+# Mástiles, tanques y ring
+MAST_L = 6800.0; MAST_D = 280.0
+TANK_D = 1800.0; TANK_L = 3200.0; TANK_T = 8.0
+RING_OUTER_R = 15000.0; RING_TORO_R = 1600.0
+
+# Ensamblado y export
+GAP_PORT = 2.0               # holgura entre túnel y brida (para booleanas limpias)
+EXPORT_SINGLE_COMPOUND = False
+EXPORT_PATH = App.getUserAppDataDir() + "SpaceStation_Ultra.step"
+
+# ===================== Utilidades geométricas =====================
+def add_part(doc, shape, name, color=(0.8,0.8,0.85), tr=0):
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = shape
+    o.ViewObject.ShapeColor = color
+    o.ViewObject.Transparency = int(tr*100) if tr<=1 else int(tr)
+    return o
+
+def rot_from_to(v_from=V(1,0,0), v_to=V(1,0,0)):
+    return App.Rotation(v_from, v_to)
+
+def place_shape(shape, base=V(0,0,0), dir_to=V(1,0,0), dir_from=V(1,0,0)):
+    s = shape.copy()
+    s.Placement = App.Placement(base, rot_from_to(dir_from, dir_to))
+    return s
+
+def bolt_circle_points(radius, count, start_deg=0.0):
+    pts = []
+    for i in range(count):
+        ang = math.radians(start_deg + (360.0/count)*i)
+        pts.append(V(radius*math.cos(ang), radius*math.sin(ang), 0))
+    return pts
+
+def cylinder_solid(r, h, axis=V(1,0,0)):
+    # cilindro por defecto a lo largo de X, base en -h/2..+h/2
+    c = Part.makeCylinder(r, h, V(-h/2,0,0), V(1,0,0))
+    if axis != V(1,0,0):
+        c = place_shape(c, V(0,0,0), axis)
+    return c
+
+def cylinder_shell(r_outer, t, h, axis=V(1,0,0)):
+    outer = cylinder_solid(r_outer, h, axis)
+    inner = cylinder_solid(max(r_outer - t, 0.1), h + 0.02, axis)  # +0.02 para evitar coplanares
+    inner.translate(V(-0.01,0,0)) # micro offset para robustez
+    return outer.cut(inner)
+
+def hemisphere(r, axis=V(1,0,0), sign=+1):
+    # hemisferio con “boca” en el plano YZ. sign=+1 apunta +X, -1 apunta -X
+    s = Part.makeSphere(r)
+    # cortar por plano X=0
+    plane = Part.makeBox(2*r, 2*r, 2*r, V(0,-r,-r))
+    if sign>0:
+        s = s.common(plane)
+    else:
+        s = s.cut(plane)
+    s = place_shape(s, V(0,0,0), axis, V(1,0,0))
+    # desplazar al extremo según sign
+    s.translate(V(sign*r/2.0,0,0) if axis==V(1,0,0) else V(0,sign*r/2.0,0))
+    return s
+
+def hemispherical_cap_shell(r_outer, t, axis=V(1,0,0), sign=+1):
+    outer = hemisphere(r_outer, axis, sign)
+    inner = hemisphere(max(r_outer - t, 0.1), axis, sign)
+    inner.translate(V(-0.01*sign,0,0))
+    return outer.cut(inner)
+
+def revolve_paraboloid(diameter, depth, t=10.0):
+    # Plato parabólico robusto por revolución
+    r = diameter/2.0
+    # Perfil exterior: parábola y = (x^2)/(4f), con profundidad f≈depth
+    f = depth
+    # Aproximación por arco: usar cono modificado para robustez (parábola real es más costosa)
+    outer = Part.makeCone(r, r*0.18, depth)
+    inner = Part.makeCone(r-t, (r-t)*0.18, max(depth-t, 1.0))
+    inner.translate(V(t/2,0,0))
+    return outer.cut(inner)
+
+def fillet_safe(shape, radius):
+    try:
+        return shape.makeFillet(radius, shape.Edges)
+    except Exception:
+        return shape
+
+def check_solid(shape, name):
+    errs = shape.check()
+    if errs:
+        App.Console.PrintWarning(f"[Check] {name}: {errs}\n")
+
+# ===================== Submódulos CAD-ready =====================
+def build_flange_port(doc, clear_d=PORT_CLEAR_D, flange_w=FLANGE_W, flange_t=FLANGE_T,
+                      bhc_r=BHC_R, bhc_n=BHC_N, bhc_d=BHC_D, base=V(0,0,0), normal=V(1,0,0), name="PortFlange"):
+    r_in = clear_d/2.0
+    r_out = r_in + flange_w
+    ring = Part.makeCylinder(r_out, flange_t, V(0,0,0), V(0,0,1)).cut(Part.makeCylinder(r_in, flange_t, V(0,0,0), V(0,0,1)))
+    # Taladros
+    holes = []
+    for p in bolt_circle_points(bhc_r, bhc_n, start_deg=0):
+        hole = Part.makeCylinder((bhc_d/2.0)+BHC_CLR, flange_t+2.0, V(p.x, p.y, -1.0), V(0,0,1))
+        holes.append(hole)
+    for h in holes:
+        ring = ring.cut(h)
+    # Orientar: por defecto +Z; queremos normal arbitraria
+    ring = place_shape(ring, V(0,0,0), normal, V(0,0,1))
+    # Colocar en base, pegado al plano de la brida
+    ring.translate(base)
+    obj = add_part(doc, ring, name, (0.92,0.92,0.96))
+    check_solid(obj.Shape, name)
+    return [obj], ring
+
+def build_tunnel(doc, clear_d=PORT_CLEAR_D, length=600.0, t=10.0, base=V(0,0,0), axis=V(1,0,0), name="Tunnel"):
+    tube = cylinder_shell(clear_d/2.0 + t, t, length, axis)
+    tube = tube.translate(base)
+    obj = add_part(doc, tube, name, (0.86,0.86,0.9))
+    check_solid(obj.Shape, name)
+    return [obj], tube
+
+def build_pressurized_module(doc, d, L, t, with_caps=True, base=V(0,0,0), axis=V(1,0,0), name="Module"):
+    R = d/2.0
+    cylinder = cylinder_shell(R, t, L, axis)
+    parts = []
+    if with_caps:
+        cap_plus  = hemispherical_cap_shell(R, t, axis, +1)
+        cap_minus = hemispherical_cap_shell(R, t, axis, -1)
+        # posicionar caps a extremos del cilindro
+        if axis == V(1,0,0):
+            cap_plus.translate(V(L/2.0,0,0)); cap_minus.translate(V(-L/2.0,0,0))
+        elif axis == V(0,1,0):
+            cap_plus.translate(V(0,L/2.0,0)); cap_minus.translate(V(0,-L/2.0,0))
+        else:
+            cap_plus.translate(V(0,0,L/2.0)); cap_minus.translate(V(0,0,-L/2.0))
+        shell = cylinder.fuse(cap_plus).fuse(cap_minus)
+    else:
+        shell = cylinder
+    shell.translate(base)
+    obj = add_part(doc, shell, name, (0.84,0.84,0.9))
+    check_solid(obj.Shape, name)
+    parts.append(obj)
+    return parts, shell
+
+def build_node(doc):
+    # Nodo cilíndrico grueso con cinco puertos
+    parts = []
+    core = cylinder_shell(NODE_R, NODE_T, NODE_L, V(1,0,0))
+    core = core.translate(V(0,0,0))
+    core_obj = add_part(doc, core, "Node_Core", (0.78,0.78,0.82))
+    parts.append(core_obj)
+
+    # Puertos: ±X, ±Y, +Z (deja -Z libre para anclaje a truss)
+    port_positions = [
+        (V(NODE_L/2.0 + FLANGE_T/2.0, 0, 0), V(1,0,0), "Port_X+"),
+        (V(-NODE_L/2.0 - FLANGE_T/2.0, 0, 0), V(-1,0,0), "Port_X-"),
+        (V(0, NODE_R + FLANGE_T/2.0, 0), V(0,1,0), "Port_Y+"),
+        (V(0, -NODE_R - FLANGE_T/2.0, 0), V(0,-1,0), "Port_Y-"),
+        (V(0, 0, NODE_R + FLANGE_T/2.0), V(0,0,1), "Port_Z+"),
+    ]
+    for pos, nrm, nm in port_positions:
+        p_objs, _ = build_flange_port(doc, base=pos, normal=nrm, name=nm)
+        parts += p_objs
+    return parts
+
+def build_truss_ibeam(doc):
+    parts = []
+    n_bays = int(TRUSS_L // BAY)
+    # Vigas longitudinales (cuatro esquinas)
+    def ibeam(length):
+        # I-beam simple: dos alas + alma
+        flange_top = Part.makeBox(length, TRUSS_W, IBEAM_F, V(-length/2, -TRUSS_W/2, TRUSS_H/2 - IBEAM_F))
+        flange_bot = Part.makeBox(length, TRUSS_W, IBEAM_F, V(-length/2, -TRUSS_W/2, -TRUSS_H/2))
+        web = Part.makeBox(length, IBEAM_TW, TRUSS_H - 2*IBEAM_F, V(-length/2, -IBEAM_TW/2, -TRUSS_H/2 + IBEAM_F))
+        return flange_top.fuse(flange_bot).fuse(web)
+
+    core = ibeam(TRUSS_L)
+    core_obj = add_part(doc, core, "Truss_Ibeam", (0.64,0.64,0.68))
+    parts.append(core_obj)
+
+    # Diagonales en cajón (barras tubulares)
+    diag_d = 90.0
+    for i in range(n_bays):
+        x0 = -TRUSS_L/2 + i*BAY
+        x1 = x0 + BAY
+        for s in (-1, 1):
+            p0 = V(x0, -TRUSS_W/2, s*TRUSS_H/2)
+            p1 = V(x1, TRUSS_W/2, -s*TRUSS_H/2)
+            vec = p1.sub(p0)
+            L = vec.Length
+            cyl = Part.makeCylinder(diag_d/2.0, L, p0, vec)
+            parts.append(add_part(doc, cyl, f"Truss_Diag_{i}_{'A' if s>0 else 'B'}", (0.72,0.72,0.76)))
+    return parts
+
+def build_radiator(doc, side=+1):
+    parts = []
+    # Placa principal
+    plate = Part.makeBox(RAD_W, RAD_T, RAD_H, V(-RAD_W/2, -RAD_T/2, -RAD_H/2))
+    plate.translate(V(0, side*(TRUSS_W/2 + RAD_OFFSET_Y), 0))
+    plate_obj = add_part(doc, plate, f"Radiator_{'P' if side>0 else 'N'}", (0.9,0.92,1.0))
+    parts.append(plate_obj)
+    # Colectores (tubos) arriba/abajo
+    for zsign in (-1, 1):
+        tube = Part.makeCylinder(MANIFOLD_D/2.0, RAD_W, V(-RAD_W/2, side*(TRUSS_W/2 + RAD_OFFSET_Y), zsign*(RAD_H/2 + MANIFOLD_D/2)), V(1,0,0))
+        shell = tube.cut(Part.makeCylinder((MANIFOLD_D/2.0)-MANIFOLD_T, RAD_W+0.02, V(-RAD_W/2, side*(TRUSS_W/2 + RAD_OFFSET_Y), zsign*(RAD_H/2 + MANIFOLD_D/2)), V(1,0,0)))
+        parts.append(add_part(doc, shell, f"Rad_Manifold_{'Top' if zsign>0 else 'Bot'}_{'P' if side>0 else 'N'}", (0.85,0.88,0.95)))
+    # Aletas (LOD)
+    if LOD != "LOW":
+        fins = 20 if LOD=="MED" else 34
+        for i in range(fins):
+            fx = -RAD_W/2 + (i+1)*RAD_W/(fins+1)
+            fin = Part.makeBox(36.0, RAD_T+24.0, RAD_H-600.0, V(fx-18.0, - (RAD_T+24.0)/2 + side*(TRUSS_W/2 + RAD_OFFSET_Y - 0), - (RAD_H-600.0)/2))
+            parts.append(add_part(doc, fin, f"Rad_Fin_{side}_{i}", (0.82,0.85,0.94)))
+    return parts
+
+def build_solar_array(doc, side=+1):
+    parts = []
+    # Gimbal (eje) montado sobre truss
+    hinge = Part.makeCylinder(GIMBAL_R, GIMBAL_L, V(-GIMBAL_L/2, side*(TRUSS_W/2 + GIMBAL_R + 80.0), TRUSS_H/2), V(1,0,0))
+    parts.append(add_part(doc, hinge, f"SA_Gimbal_{'P' if side>0 else 'N'}", (0.72,0.72,0.78)))
+
+    # Yugo
+    yoke = Part.makeBox(YOKE_L, YOKE_W, YOKE_T, V(-YOKE_L/2, side*(TRUSS_W/2 + GIMBAL_R + 80.0) - YOKE_W/2, TRUSS_H/2 - YOKE_T/2))
+    parts.append(add_part(doc, yoke, f"SA_Yoke_{'P' if side>0 else 'N'}", (0.72,0.75,0.82)))
+
+    # Panel
+    panel = Part.makeBox(SA_CHORD, SA_T, SA_SPAN, V(GIMBAL_L/2 + 220.0, side*(TRUSS_W/2 + GIMBAL_R + 80.0) - SA_T/2, -SA_SPAN/2))
+    p_obj = add_part(doc, panel, f"SA_Panel_{'P' if side>0 else 'N'}", (0.12,0.18,0.55))
+    parts.append(p_obj)
+
+    # Stringers (rigidizadores)
+    if LOD == "HIGH":
+        for i in range(SA_STRINGERS):
+            local_x = GIMBAL_L/2 + 260.0 + i*(SA_CHORD-520.0)/(SA_STRINGERS-1)
+            strg = Part.makeBox(SA_STRINGER_W, SA_T+10.0, SA_SPAN-800.0, V(local_x - SA_STRINGER_W/2, side*(TRUSS_W/2 + GIMBAL_R + 80.0) - (SA_T+10.0)/2, - (SA_SPAN-800.0)/2))
+            parts.append(add_part(doc, strg, f"SA_Stringer_{side}_{i}", (0.18,0.25,0.65)))
+    return parts
+
+def build_hga(doc, base=V(0,0,0), axis=V(1,0,0)):
+    parts = []
+    boom = Part.makeCylinder(HGA_BOOM_D/2.0, HGA_BOOM_L, base, axis)
+    parts.append(add_part(doc, boom, "HGA_Boom", (0.72,0.72,0.76)))
+    dish = revolve_paraboloid(HGA_D, HGA_DEPTH, t=12.0)
+    # orientar y posicionar frente a boom
+    dish = place_shape(dish, V(0,0,0), axis)
+    tip = base.add(axis.multiply(HGA_BOOM_L + 60.0))
+    dish.translate(tip)
+    parts.append(add_part(doc, dish, "HGA_Dish", (0.95,0.95,0.98)))
+    return parts
+
+def build_mga_pair(doc, base=V(0,0,0), axis=V(1,0,0)):
+    a1 = Part.makeCylinder(MGA_R, MGA_H, base, axis)
+    a2 = Part.makeCylinder(MGA_R*0.85, MGA_H, base.add(V(0,800.0,380.0)), axis)
+    return [add_part(doc, a1, "MGA_1", (0.95,0.95,1.0)), add_part(doc, a2, "MGA_2", (0.95,0.95,1.0))]
+
+def build_rcs_quad(doc, base=V(0,0,0), normal=V(1,0,0), name="RCS_Quad"):
+    parts = []
+    # cuatro toberas alrededor del normal, en cruz
+    dirs = [V(0,1,0), V(0,-1,0), V(0,0,1), V(0,0,-1)]
+    for i, dv in enumerate(dirs):
+        dir_vec = (normal.add(dv)).normalize()
+        cone = Part.makeCone(RCS_CONE_D/2.0, 6.0, RCS_CONE_L, base, dir_vec)
+        parts.append(add_part(doc, cone, f"{name}_{i+1}", (0.65,0.65,0.68)))
+    return parts
+
+def build_tank(doc, d=TANK_D, L=TANK_L, t=TANK_T, base=V(0,0,0), axis=V(1,0,0), name="Tank"):
+    R = d/2.0
+    shell = cylinder_shell(R, t, L, axis)
+    cap_p = hemispherical_cap_shell(R, t, axis, +1)
+    cap_m = hemispherical_cap_shell(R, t, axis, -1)
+    if axis == V(1,0,0):
+        cap_p.translate(V(L/2.0,0,0)); cap_m.translate(V(-L/2.0,0,0))
+    elif axis == V(0,1,0):
+        cap_p.translate(V(0,L/2.0,0)); cap_m.translate(V(0,-L/2.0,0))
+    else:
+        cap_p.translate(V(0,0,L/2.0)); cap_m.translate(V(0,0,-L/2.0))
+    solid = shell.fuse(cap_p).fuse(cap_m)
+    solid.translate(base)
+    obj = add_part(doc, solid, name, (0.85,0.85,0.9))
+    check_solid(obj.Shape, name)
+    return [obj]
+
+def build_ring(doc, center=V(0,0,0), axis=V(0,1,0)):
+    ring = Part.makeTorus(RING_OUTER_R, RING_TORO_R)
+    ring = place_shape(ring, center, axis, V(0,0,1))
+    obj = add_part(doc, ring, "Hab_SpinRing", (0.82,0.82,0.84))
+    check_solid(obj.Shape, "Hab_SpinRing")
+    return [obj]
+
+# ===================== Ensamblado completo =====================
+def build_station(doc):
+    parts = []
+
+    # 1) Nodo central y puertos
+    parts += build_node(doc)
+
+    # 2) Truss dorsal y montaje al nodo (por trasera -Z del nodo)
+    truss_parts = build_truss_ibeam(doc); parts += truss_parts
+    # Elevar truss por detrás del nodo
+    dz = NODE_R + TRUSS_H/2.0 + 700.0
+    for o in truss_parts:
+        o.Placement.Base = o.Placement.Base.add(V(0, 0, dz))
+
+    # 3) Radiadores laterales ±Y sobre truss
+    parts += build_radiator(doc, side=+1)
+    parts += build_radiator(doc, side=-1)
+
+    # 4) Paneles solares ±Y en extremo superior del truss
+    parts += build_solar_array(doc, side=+1)
+    parts += build_solar_array(doc, side=-1)
+
+    # 5) Módulos presurizados en ±X, ±Y, +Z con túneles y bridas
+    # +X Hab
+    hab_parts, hab_shape = build_pressurized_module(doc, MOD_HAB_D, MOD_HAB_L, MOD_T, True,
+                                                    base=V(NODE_L/2.0 + MOD_HAB_L/2.0 + 1200.0, 0, 0),
+                                                    axis=V(1,0,0), name="Hab_X+")
+    parts += hab_parts
+    # túnel entre Nodo y Hab
+    t_len = 900.0
+    tun_parts, tun_shape = build_tunnel(doc, PORT_CLEAR_D, t_len, t=MOD_T, base=V(NODE_L/2.0 + t_len/2.0 + GAP_PORT, 0, 0), axis=V(1,0,0), name="Tunnel_X+")
+    parts += tun_parts
+    # brida interfaz lado Hab
+    parts += build_flange_port(doc, base=V(NODE_L/2.0 + t_len + FLANGE_T/2.0, 0, 0), normal=V(1,0,0), name="Flange_X+")[0]
+
+    # -X Lab
+    lab_parts, _ = build_pressurized_module(doc, MOD_LAB_D, MOD_LAB_L, MOD_T, True,
+                                            base=V(-NODE_L/2.0 - MOD_LAB_L/2.0 - 1400.0, 0, 0),
+                                            axis=V(1,0,0), name="Lab_X-")
+    parts += lab_parts
+    tun_parts2, _ = build_tunnel(doc, PORT_CLEAR_D, t_len, t=MOD_T, base=V(-NODE_L/2.0 - t_len/2.0 - GAP_PORT, 0, 0), axis=V(1,0,0), name="Tunnel_X-")
+    parts += tun_parts2
+    parts += build_flange_port(doc, base=V(-NODE_L/2.0 - t_len - FLANGE_T/2.0, 0, 0), normal=V(-1,0,0), name="Flange_X-")[0]
+
+    # +Y y -Y corredores
+    c_off = NODE_R + CORR_L/2.0 + 900.0
+    cor_p, _ = build_pressurized_module(doc, CORR_D, CORR_L, MOD_T, False, base=V(0, c_off, 0), axis=V(0,1,0), name="Corr_Y+"); parts += cor_p
+    cor_n, _ = build_pressurized_module(doc, CORR_D, CORR_L, MOD_T, False, base=V(0, -c_off, 0), axis=V(0,1,0), name="Corr_Y-"); parts += cor_n
+    parts += build_flange_port(doc, base=V(0, NODE_R + FLANGE_T/2.0, 0), normal=V(0,1,0), name="Flange_Y+")[0]
+    parts += build_flange_port(doc, base=V(0, -NODE_R - FLANGE_T/2.0, 0), normal=V(0,-1,0), name="Flange_Y-")[0]
+
+    # +Z corredor
+    cor_z, _ = build_pressurized_module(doc, CORR_D, CORR_L, MOD_T, False, base=V(0, 0, NODE_R + CORR_L/2.0 + 900.0), axis=V(0,0,1), name="Corr_Z+"); parts += cor_z
+    parts += build_flange_port(doc, base=V(0, 0, NODE_R + FLANGE_T/2.0), normal=V(0,0,1), name="Flange_Z+")[0]
+
+    # 6) Antenas: HGA al frente + MGA lateral
+    parts += build_hga(doc, base=V(NODE_L/2.0 + 1600.0, 0, 0), axis=V(1,0,0))
+    parts += build_mga_pair(doc, base=V(0, NODE_R + 1600.0, 400.0), axis=V(1,0,0))
+
+    # 7) RCS quads (4 conjuntos en “esquinas” del nodo)
+    rcs_bases = [
+        V(NODE_L/2.0 - 200.0,  RCS_OFFSET,  RCS_OFFSET),
+        V(NODE_L/2.0 - 200.0, -RCS_OFFSET,  RCS_OFFSET),
+        V(-NODE_L/2.0 + 200.0, RCS_OFFSET, -RCS_OFFSET),
+        V(-NODE_L/2.0 + 200.0,-RCS_OFFSET, -RCS_OFFSET),
+    ]
+    for i, b in enumerate(rcs_bases):
+        parts += build_rcs_quad(doc, base=b, normal=(b - V(0,0,0)).normalize(), name=f"RCS_Q{i+1}")
+
+    # 8) Tanques en faldón del truss
+    tank_y = TRUSS_W/2.0 + 700.0
+    parts += build_tank(doc, base=V(-6000.0, tank_y, dz), axis=V(0,1,0), name="Tank_P1")
+    parts += build_tank(doc, base=V( 6000.0,-tank_y, dz), axis=V(0,1,0), name="Tank_N1")
+
+    # 9) Mástil superior
+    mast = Part.makeCylinder(MAST_D/2.0, MAST_L, V(0,0, NODE_R + TRUSS_H + 1400.0), V(0,0,1))
+    parts.append(add_part(doc, mast, "Mast_Top", (0.72,0.72,0.76)))
+
+    # 10) Anillo habitable (decorativo/estudio)
+    parts += build_ring(doc, center=V(-7000.0, 0, -RING_OUTER_R - 3400.0), axis=V(0,1,0))
+
+    return parts
+
+# ===================== Ejecutar y exportar =====================
+doc = App.newDocument("SpaceStation_Ultra")
+objs = build_station(doc)
+doc.recompute()
+
+# Propiedades simples (útiles en PLM)
+for o in objs:
+    try:
+        o.addProperty("App::PropertyString", "Material", "Meta", "Material nominal")
+        o.Material = "Al-2219-T851" if "Truss" in o.Name or "Ibeam" in o.Name else "Al-6061-T6"
+        o.addProperty("App::PropertyString", "PartNumber", "Meta", "PN")
+        o.PartNumber = f"SSU-{o.Name}"
+        o.addProperty("App::PropertyString", "Description", "Meta", "Descripción")
+        o.Description = o.Name.replace("_"," ")
+    except Exception:
+        pass
+
+# Export STEP
+try:
+    if EXPORT_SINGLE_COMPOUND:
+        comp = Part.Compound([o.Shape for o in objs if hasattr(o, "Shape")])
+        tmp = doc.addObject("Part::Feature", "AssemblyCompound")
+        tmp.Shape = comp
+        Part.export([tmp], EXPORT_PATH)
+    else:
+        Part.export(objs, EXPORT_PATH)
+    App.Console.PrintMessage("Exportado STEP en: {}\n".format(EXPORT_PATH))
+except Exception as e:
+    App.Console.PrintError("Error exportando STEP: {}\n".format(e))
+

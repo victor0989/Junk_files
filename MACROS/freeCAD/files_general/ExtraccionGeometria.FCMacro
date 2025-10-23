@@ -1,0 +1,25 @@
+import FreeCAD as App
+import Part
+
+# Usa raw string para la ruta Windows
+file_path = r"C:\Users\PC\AppData\Roaming\FreeCAD\Macro\HabitatSondaB.FCStd"
+
+doc = App.openDocument(file_path)
+
+print(f"Documento '{doc.Label}' cargado con {len(doc.Objects)} objetos.")
+
+for obj in doc.Objects:
+    if hasattr(obj, "Shape") and not obj.Shape.isNull():
+        shape = obj.Shape
+        print(f"Objeto: {obj.Label}")
+        print(f"  Tipo: {shape.ShapeType}")
+        print(f"  Vértices: {len(shape.Vertexes)}")
+        print(f"  Aristas: {len(shape.Edges)}")
+        print(f"  Caras: {len(shape.Faces)}")
+        print(f"  Volumen: {shape.Volume}")
+       # print(f"  Centro de masa: {shape.CenterOfMass}")
+
+        for i, v in enumerate(shape.Vertexes):
+            p = v.Point
+            print(f"    Vértice {i}: ({p.x:.3f}, {p.y:.3f}, {p.z:.3f})")
+

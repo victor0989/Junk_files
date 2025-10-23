@@ -1,0 +1,22 @@
+import FreeCAD as App
+import Part
+
+doc = App.newDocument("EstacionSinAnillo")
+
+def crear_modulo(nombre, posicion):
+    modulo = Part.makeCylinder(4, 12)  # diámetro 8, altura 12
+    pieza = doc.addObject("Part::Feature", nombre)
+    pieza.Shape = modulo
+    pieza.Placement.Base = posicion
+
+def build_station():
+    # Módulo central
+    crear_modulo("ModuloCentral", App.Vector(0, 0, 0))
+    # Módulos periféricos (ejemplo)
+    crear_modulo("ModuloNorte", App.Vector(0, 20, 0))
+    crear_modulo("ModuloSur", App.Vector(0, -20, 0))
+    crear_modulo("ModuloEste", App.Vector(20, 0, 0))
+    crear_modulo("ModuloOeste", App.Vector(-20, 0, 0))
+
+build_station()
+doc.recompute()

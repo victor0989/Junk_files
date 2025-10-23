@@ -1,0 +1,199 @@
+# -*- coding: utf-8 -*-
+# Macro FreeCAD: Paraboloide multicapa (C/C + Epoxy + Kevlar/epoxy) + aro y boom
+# Genera sólidos y exporta a STEP AP214
+
+import math
+import FreeCAD as App
+import Part
+
+# ---------- Parámetros globales (mm) ----------
+p_bus_w = 60.0
+
+# Antena trasera
+back_dish_d      = 120.0     # diámetro del plato
+back_dish_depth  = 25.0      # profundidad de la parábola (eje)
+steps_profile    = 72        # discretización del perfil (>= 36 recomendable)
+t_bumper_ring    = 1.2       # grosor radial del aro toroidal del borde
+
+# Capas del plato [ (t, (r,g,b), alpha) ] ; colores normalizados 0..1
+layers_rear_dish = [
+    (0.8,  (0.41,0.41,0.41), 0.95),  # C/C bumper - dimgray
+    (0.3,  (0.63,0.32,0.18), 0.55),  # Epoxy unión - sienna
+    (3.0,  (0.85,0.65,0.13), 0.55),  # Kevlar+epoxy - goldenrod
+]
+
+# Soporte ring
+ring_h        = 3.0
+ring_r_outer  = 18.0
+ring_r_inner  = 14.0
+
+# Boom trasero
+boom_len_back = 80.0
+boom_r        = 1.8
+boom_tip_r    = 4.0
+
+# Exportación
+export_path = App.getUserAppDataDir() + "CompositeRearDish.step"  # cambia si quieres
+# ----------------------------------------------
+
+
+# =============== Utilidades geométricas =================
+def parabola_r(z, d, depth):
+    # r(z) = sqrt(4 f z), con f = d^2 / (16*depth)
+    if depth <= 0: return 0.0
+    f = (d*d) / (16.0*depth)
+    val = 4.0*f*z
+    return math.sqrt(val) if val > 0 else 0.0
+
+def make_revolved_solid_from_diameter(d, depth, steps=72, z0_eps_factor=1.0):
+    """
+    Crea un sólido de revolución (macizo) del volumen bajo la curva r(z), z ∈ [z0, depth].
+    Se evita z=0 exacto para no degenerar el eje.
+    Eje de revolución: Z. Plano del perfil: XZ (y=0), con x=r(z).
+    """
+    if d <= 0 or depth <= 0:
+        return None
+
+    steps = max(24, int(steps))
+    z0 = depth / (steps * z0_eps_factor)  # pequeño desplazamiento para evitar r=0
+
+    # Puntos del contorno (en sentido horario):
+    # 1) Línea del eje: (0,z0) -> (0,depth)
+    p_axis_bot = App.Vector(0, 0, z0)
+    p_axis_top = App.Vector(0, 0, depth)
+    e_axis = Part.makeLine(p_axis_bot, p_axis_top)
+
+    # 2) Radial superior: (0,depth) -> (r_max, depth)
+    r_max = parabola_r(depth, d, depth)
+    p_top_out = App.Vector(r_max, 0, depth)
+    e_top = Part.makeLine(p_axis_top, p_top_out)
+
+    # 3) Curva exterior: de z=depth -> z=z0
+    outer_pts = []
+    for i in range(steps+1):
+        z = depth - (depth - z0) * (i/steps)
+        r = parabola_r(z, d, depth)
+        outer_pts.append(App.Vector(r, 0, z))
+    e_curve = Part.makePolygon(outer_pts)
+
+    # 4) Radial inferior: (r(z0), z0) -> (0, z0)
+    p_bot_out = outer_pts[-1]
+    e_bot = Part.makeLine(p_bot_out, p_axis_bot)
+
+    wire = Part.Wire([e_axis, e_top, e_curve, e_bot])
+    face = Part.Face(wire)
+    solid = face.revolve(App.Vector(0,0,0), App.Vector(0,0,1), 360)
+    return solid
+
+def make_dish_layer_solid(d, depth, t, steps=72):
+    """
+    Genera una capa del plato como sólido: outer_solid - inner_solid
+    Offset radial aproximado: d_inner = d - 2*t
+    """
+    d_eff = max(d, 0.1)
+    outer = make_revolved_solid_from_diameter(d_eff, depth, steps)
+    d_inner = d_eff - 2.0*t
+    if d_inner <= 0.1:
+        # Capa demasiado gruesa para el diámetro; devolvemos outer
+        return outer
+    inner = make_revolved_solid_from_diameter(d_inner, depth, steps)
+    return outer.cut(inner)
+
+def make_ring(r_outer, r_inner, h):
+    """
+    Anillo (ring) como cilindro hueco. Eje por defecto: Z, base en z=0.
+    """
+    outer = Part.makeCylinder(r_outer, h)
+    inner = Part.makeCylinder(r_inner, h)
+    return outer.cut(inner)
+
+def place_shape(shape, pos=App.Vector(0,0,0), rot_axis=App.Vector(0,1,0), rot_deg=0):
+    """
+    Aplica una colocación a un Shape (rotación + traslación) y devuelve una copia colocada.
+    """
+    sh = shape.copy()
+    pl = App.Placement()
+    pl.Rotation = App.Rotation(rot_axis, rot_deg)
+    pl.Base = pos
+    sh.Placement = pl
+    return sh
+
+def add_part(doc, shape, name, color=(0.8,0.8,0.8), transparency=0):
+    """
+    Crea un objeto Part::Feature en el doc con color.
+    """
+    if shape is None: return None
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    try:
+        # Color y transparencia (GUI)
+        obj.ViewObject.ShapeColor = color
+        obj.ViewObject.Transparency = int(max(0, min(100, round(transparency*100))))
+    except Exception:
+        pass
+    return obj
+
+
+# =============== Construcción del conjunto trasero ===============
+def build_rear_assembly(doc):
+    objs = []
+
+    # Posición “trasera” (coincide con tu OpenSCAD aprox.): eje de la antena hacia +X
+    apex_x = -p_bus_w/2.0 - 24.0
+    apex = App.Vector(apex_x, 0, 0)
+
+    # 1) Plato multicapa
+    # Construimos capa por capa, reduciendo el diámetro efectivo acumulado
+    t_cum = 0.0
+    for i, (t_i, rgb, alpha) in enumerate(layers_rear_dish):
+        d_eff = back_dish_d - 2.0*t_cum
+        layer_shape_Z = make_dish_layer_solid(d_eff, back_dish_depth, t_i, steps_profile)
+        # Orientar eje del plato a lo largo de X (rota en Y 90º) y mover a apex
+        layer_shape_X = place_shape(layer_shape_Z, pos=apex, rot_axis=App.Vector(0,1,0), rot_deg=90)
+        obj = add_part(doc, layer_shape_X, f"DishLayer_{i+1}", color=rgb, transparency=(1.0-alpha))
+        if obj: objs.append(obj)
+        t_cum += t_i
+
+    # 2) Aro toroidal en el borde del plato
+    # Torus por defecto centrado en origen, eje Z. R = radio mayor, r = radio menor
+    R_major = back_dish_d/2.0
+    r_minor = t_bumper_ring/2.0
+    torus = Part.makeTorus(R_major, r_minor)
+    # Colocarlo en el borde: a una distancia "depth" a lo largo del eje del plato (+X)
+    torus_X = place_shape(torus, pos=apex.add(App.Vector(back_dish_depth,0,0)), 
+                          rot_axis=App.Vector(0,1,0), rot_deg=90)
+    objs.append(add_part(doc, torus_X, "DishRimBumper", color=(0.41,0.41,0.41), transparency=5/100))
+
+    # 3) Ring soporte (hueco), alineado con eje X, base en apex_x
+    ring_Z = make_ring(ring_r_outer, ring_r_inner, ring_h)
+    # El cilindro tiene base en z=0; tras rotar Y 90º, base queda en x=0.
+    # Lo movemos para que su base esté en apex_x:
+    ring_X = place_shape(ring_Z, pos=App.Vector(apex_x, 0, 0), rot_axis=App.Vector(0,1,0), rot_deg=90)
+    objs.append(add_part(doc, ring_X, "RearRing", color=(0.75,0.75,0.75), transparency=0))
+
+    # 4) Boom trasero (eje X), con esfera en el extremo "trasero"
+    # Ubicaremos el cilindro con su base en x = apex_x - (24 - 14) + (24 - 14) ... para simplificar:
+    boom_base_x = -p_bus_w/2.0 - 10.0 - boom_len_back  # extremo trasero
+    boom_cyl_Z = Part.makeCylinder(boom_r, boom_len_back)
+    boom_cyl_X = place_shape(boom_cyl_Z, pos=App.Vector(boom_base_x, 0, 0), rot_axis=App.Vector(0,1,0), rot_deg=90)
+    objs.append(add_part(doc, boom_cyl_X, "RearBoom", color=(0.75,0.75,0.75), transparency=0))
+
+    tip_sphere = Part.makeSphere(boom_tip_r)
+    tip_sphere_X = place_shape(tip_sphere, pos=App.Vector(boom_base_x, 0, 0))
+    objs.append(add_part(doc, tip_sphere_X, "BoomTip", color=(0.80,0.80,0.20), transparency=0))
+
+    return [o for o in objs if o is not None]
+
+
+# =================== Ejecutar y exportar ===================
+doc = App.newDocument("CompositeRearDish")
+
+objs = build_rear_assembly(doc)
+doc.recompute()
+
+# Exportar a STEP (AP214). Los colores suelen preservarse si el exportador AP214 está activo.
+try:
+    Part.export(objs, export_path)
+    App.Console.PrintMessage("Exportado STEP en: {}\n".format(export_path))
+except Exception as e:
+    App.Console.PrintError("Error exportando STEP: {}\n".format(e))

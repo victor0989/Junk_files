@@ -1,0 +1,265 @@
+# FreeCAD macro: Sci-Fi ship translated from OpenSCAD (single fused body)
+# Generated to approximate the OpenSCAD model provided.
+# Usage: Open FreeCAD, create a new document, then Run Macro -> select this file and run.
+# The macro creates individual parts but fuses them into a single Part::Feature at the end
+# called 'nave_cuerpo'.
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+from FreeCAD import Vector
+
+DOCNAME = 'SciFi_Ship_SingleBody'
+
+# Create or get document
+if App.ActiveDocument is None or App.ActiveDocument.Name != DOCNAME:
+    if App.ActiveDocument is not None and App.ActiveDocument.Name != DOCNAME:
+        App.closeDocument(App.ActiveDocument.Name)
+    doc = App.newDocument(DOCNAME)
+else:
+    doc = App.ActiveDocument
+
+# Helpers
+
+def add_temp(shape):
+    # Add as temporary object (hidden) so the user tree stays clean
+    obj = doc.addObject('Part::Feature', 'temp')
+    obj.Shape = shape
+    obj.ViewObject.hide()
+    return obj
+
+def clean_temps():
+    for o in list(doc.Objects):
+        if o.Name.startswith('temp'):
+            doc.removeObject(o.Name)
+
+# Rotate vector v from to using rotation matrix -> compute placement
+def cylinder_between(p0, p1, radius=0.05, fn=32):
+    # returns Part.Shape cylinder between p0 and p1
+    p0 = Vector(*p0)
+    p1 = Vector(*p1)
+    v = p1 - p0
+    length = v.Length
+    if length == 0:
+        return Part.makeSphere(radius)
+    cyl = Part.makeCylinder(radius, length, Vector(0,0,0), Vector(0,0,1))
+    # align cylinder Z to vector v
+    axis = Vector(0,0,1)
+    rot = axis.getRotationTo(v)
+    cyl.Placement = App.Placement(p0, rot, Vector(0,0,0))
+    return cyl
+
+def make_torus(r1=1.0, r2=0.2):
+    # Part has makeTorus
+    try:
+        tor = Part.makeTorus(r1, r2)
+        return tor
+    except Exception:
+        # fallback: revolve a circle
+        circ = Part.makeCircle(r2, Vector(r1,0,0), Vector(0,0,1))
+        wire = Part.Wire(circ)
+        face = Part.Face(wire)
+        rev = face.revolve(Vector(0,0,0), Vector(0,0,1), 360)
+        return rev
+
+# Approximate offset_3d via Minkowski-ish: fuse shape with a sphere and small cylinders along bounding box edges
+# This is an approximation that gives rounded look for simple primitives used here.
+
+def offset_3d_approx(base_shape, r=0.1, samples=8):
+    # base_shape: Part.Shape
+    shapes = [base_shape]
+    # add sphere at center
+    bbox = base_shape.BoundBox
+    center = Vector((bbox.XMin+bbox.XMax)/2.0, (bbox.YMin+bbox.YMax)/2.0, (bbox.ZMin+bbox.ZMax)/2.0)
+    sph = Part.makeSphere(abs(r))
+    sph.translate(center)
+    shapes.append(sph)
+    # add small spheres at corners of bbox
+    corners = [Vector(x,y,z) for x in (bbox.XMin, bbox.XMax) for y in (bbox.YMin,bbox.YMax) for z in (bbox.ZMin,bbox.ZMax)]
+    for c in corners:
+        s = Part.makeSphere(abs(r))
+        s.translate(c)
+        shapes.append(s)
+    # add cylinders along principal edges of bbox to smooth
+    edges = [ (Vector(bbox.XMin,bbox.YMin,bbox.ZMin), Vector(bbox.XMax,bbox.YMin,bbox.ZMin)),
+              (Vector(bbox.XMin,bbox.YMin,bbox.ZMin), Vector(bbox.XMin,bbox.YMax,bbox.ZMin)),
+              (Vector(bbox.XMin,bbox.YMin,bbox.ZMin), Vector(bbox.XMin,bbox.YMin,bbox.ZMax)) ]
+    for a,b in edges:
+        c = cylinder_between((a.x,a.y,a.z),(b.x,b.y,b.z), radius=abs(r))
+        shapes.append(c)
+    comp = Part.makeCompound(shapes)
+    fused = comp.fuse()
+    return fused
+
+# Modules translated
+
+def fuselaje():
+    cyl = Part.makeCylinder(1,6,Vector(0,0,-3))
+    cyl.translate(Vector(0,0,0))
+    # center true in OpenSCAD -> center in Z
+    cyl.translate(Vector(0,0,0))
+    shp = offset_3d_approx(cyl, r=0.2)
+    return shp
+
+def escudo():
+    sph = Part.makeSphere(1.1)
+    sph.translate(Vector(0,0,3.2))
+    box = Part.makeBox(4.4,4.4,2)
+    box.translate(Vector(-2.2,-2.2,2.9))
+    inter = sph.common(box)
+    return inter
+
+def panel_izq():
+    box = Part.makeBox(2,2,0.1)
+    # centered true
+    box.translate(Vector(-1, -1, -0.05))
+    # scale [1,2.5,0.08] and translate -2.5 in X
+    box.scale(Vector(1,2.5,0.08)) if False else None
+    # scaling Part.Shape directly is non-trivial; instead create scaled box manually
+    sx, sy, sz = 1, 2.5, 0.08
+    b2 = Part.makeBox(2*sx, 2*sy, 0.1*sz)
+    b2.translate(Vector(-2*sx/2 - 2.5, -2*sy/2, -0.05*sz))
+    shp = offset_3d_approx(b2, r=0.05)
+    return shp
+
+def panel_der():
+    # mirror of left panel
+    shp = panel_izq()
+    shp.translate(Vector(5,0,0))
+    return shp
+
+def motor(x_offset):
+    # cylinder h=0.7 r1=0.35 r2=0 (cone)
+    cone = Part.makeCone(0.35, 0.0, 0.7)
+    cone.rotate(Vector(0,0,0), Vector(1,0,0), 180)
+    cone.translate(Vector(x_offset,0,-3.5))
+    shp = offset_3d_approx(cone, r=0.1)
+    return shp
+
+def antena():
+    sph = Part.makeSphere(0.55)
+    sph.translate(Vector(0,0,4.1))
+    box = Part.makeBox(2,2,2)
+    box.translate(Vector(-1,-1,4.1))
+    diff = sph.cut(box)
+    cable = cylinder_between((0,0,4.1),(0,0,1.1), radius=0.05)
+    comp = diff.fuse(cable)
+    return comp
+
+def soporte_panel(x_offset):
+    cyl = Part.makeCylinder(0.06,1.7)
+    cyl.rotate(Vector(0,0,0), Vector(1,0,0), 90)
+    cyl.translate(Vector(x_offset,0,0))
+    return cyl
+
+def cupula():
+    sph = Part.makeSphere(1.05)
+    sph.translate(Vector(0,0,-3.1))
+    box = Part.makeBox(4.4,4.4,2)
+    box.translate(Vector(-2.2,-2.2,-5))
+    inter = sph.common(box)
+    return inter
+
+def base_detallada():
+    shapes = []
+    for i in range(0,360,45):
+        az = math.radians(i)
+        x = 0.7*math.cos(az)
+        y = 0.7*math.sin(az)
+        c = Part.makeCylinder(0.1,0.2)
+        c.translate(Vector(x-0.05,y-0.05,-3.4))
+        shapes.append(c)
+    return Part.makeCompound(shapes)
+
+def tobera(x,y,z,r1=0.3,r2=0.1):
+    tor = make_torus(r1,r2)
+    tor.rotate(Vector(0,0,0), Vector(1,0,0), 90)
+    tor.translate(Vector(x,y,z))
+    return tor
+
+def plasma_core(radios=5):
+    shapes = []
+    step = 360.0/radios
+    for i in range(radios):
+        az = math.radians(i*step)
+        x = 0.5*math.cos(az)
+        y = 0.5*math.sin(az)
+        cyl = Part.makeCone(0.05, 0.01, 0.4)
+        cyl.translate(Vector(x,y,-3.6))
+        shapes.append(cyl)
+    return Part.makeCompound(shapes)
+
+def antena_mejorada():
+    sph = Part.makeSphere(0.55)
+    sph.translate(Vector(0,0,4.1))
+    box = Part.makeBox(2,2,2)
+    box.translate(Vector(-1,-1,4.1))
+    diff = offset_3d_approx(sph, r=0.02).cut(box)
+    core = Part.makeCylinder(0.1,0.2)
+    core.translate(Vector(0,0,4.3))
+    cable = cylinder_between((0,0,4.1),(0,0,1.1), radius=0.05)
+    return diff.fuse(core).fuse(cable)
+
+# Assemble all pieces and fuse into single body
+
+def assemble_single_body(scale_factor=25.0):
+    parts = []
+    print('Creating fuselaje...')
+    parts.append(fuselaje())
+    print('Creating escudo...')
+    parts.append(escudo())
+    print('Creating cupula...')
+    parts.append(cupula())
+    print('Creating panels...')
+    parts.append(panel_izq())
+    parts.append(panel_der())
+    print('Creating soportes...')
+    parts.append(soporte_panel(-1.6))
+    parts.append(soporte_panel(1.6))
+    print('Creating motores...')
+    parts.append(motor(-0.6))
+    parts.append(motor(0.6))
+    print('Creating base detallada...')
+    parts.append(base_detallada())
+    print('Creating toberas...')
+    parts.append(tobera(-0.6,0,-4.0))
+    parts.append(tobera(0.6,0,-4.0))
+    parts.append(tobera(0,0,-4.2, 0.5, 0.15))
+    print('Creating plasma core...')
+    parts.append(plasma_core(12))
+    print('Creating antena mejorada...')
+    parts.append(antena_mejorada())
+
+    # Fuse all parts
+    print('Fusing parts... this may take a few seconds...')
+    base = parts[0]
+    for p in parts[1:]:
+        base = base.fuse(p)
+
+    # Apply global scale (x25)
+    if scale_factor != 1.0:
+        sp = base.scale(Vector(scale_factor, scale_factor, scale_factor))
+        # scale returns a new shape but with vertices possibly needing refinement
+        base = sp
+
+    # Clean temps
+    clean_temps()
+
+    # Add final single body to document
+    final = doc.addObject('Part::Feature', 'nave_cuerpo')
+    final.Shape = base
+    doc.recompute()
+    return final
+
+# Run assembly
+final_obj = assemble_single_body()
+
+# Fit view
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except Exception:
+    pass
+
+print('Macro ejecutada: nave_cuerpo creada en el documento ' + DOCNAME)

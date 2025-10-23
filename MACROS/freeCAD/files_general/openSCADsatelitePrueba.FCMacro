@@ -1,0 +1,489 @@
+# FreeCAD macro: Satellite translated from OpenSCAD
+# Generated to reproduce the OpenSCAD model in a parametric FreeCAD macro.
+# Usage: open FreeCAD, create a new document, then Run Macro -> select this file and run.
+# Notes: The script tries to mirror the structure of the OpenSCAD modules as functions
+# and places objects in the document to keep them editable. Some boolean operations
+# or revolve-like constructs are approximated using FreeCAD equivalents.
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import Draft
+import math
+from FreeCAD import Vector
+
+DOCNAME = 'Satellite_From_OpenSCAD'
+
+# Create or get document
+if App.ActiveDocument is None or App.ActiveDocument.Name != DOCNAME:
+    if App.ActiveDocument is not None and App.ActiveDocument.Name != DOCNAME:
+        App.closeDocument(App.ActiveDocument.Name)
+    doc = App.newDocument(DOCNAME)
+else:
+    doc = App.ActiveDocument
+
+# Helper: add shape to document
+def add_shape(shape, name):
+    obj = doc.addObject('Part::Feature', name)
+    obj.Shape = shape
+    return obj
+
+# Helper: boolean operations
+def fuse(a, b):
+    return a.fuse(b)
+
+def cut(a, b):
+    return a.cut(b)
+
+# Transform helper
+def placement_from_trf(translate=(0,0,0), rotate=(0,0,0)):
+    # rotate given in degrees (rx,ry,rz) applied in ZYX order
+    rx, ry, rz = rotate
+    pl = App.Placement()
+    pl.Base = Vector(*translate)
+    # FreeCAD Rotation takes axis-angle or Euler in degrees by providing three angles
+    pl.Rotation = App.Rotation(rz, ry, rx)
+    return pl
+
+# ---------- Basic modules translated ----------
+
+# polygonMoche -> create 2D polygon and extrude
+def polygonMoche(height=7, center=True, name='polygonMoche'):
+    pts = [Vector(0,0,0), Vector(8,10,0), Vector(20,10,0), Vector(28,0,0), Vector(20,-10,0), Vector(8,-10,0), Vector(0,0,0)]
+    wire = Part.makePolygon(pts)
+    face = Part.Face(wire)
+    solid = face.extrude(Vector(0,0,height))
+    if center:
+        solid.translate(Vector(-14,0,-height/2))
+    obj = add_shape(solid, name)
+    return obj
+
+def polygonTresMoche(height=18, center=True, name='polygonTresMoche'):
+    pts = [Vector(10,-40,0), Vector(15,-35,0), Vector(15,35,0), Vector(10,40,0), Vector(-10,30,0), Vector(-15,15,0), Vector(-15,-15,0), Vector(-10,-20,0), Vector(10,-40,0)]
+    wire = Part.makePolygon(pts)
+    face = Part.Face(wire)
+    solid = face.extrude(Vector(0,0,height))
+    if center:
+        solid.translate(Vector(0,0,-height/2))
+    obj = add_shape(solid, name)
+    return obj
+
+# moteurMoche: tapered cylinder difference approximated with two cylinders
+def moteurMoche(name='moteurMoche'):
+    # cylinder centered
+    c1 = Part.makeCylinder(5,5,Vector(-5/2.0,0,0)) # small fudge - we'll center later
+    # Better: make centered and then set placement
+    cyl_outer = Part.makeCone(6,5,5)
+    cyl_outer.translate(Vector(0,0,-2.5))
+    cyl_inner = Part.makeCone(6*0.95,5*0.95,6)
+    cyl_inner.translate(Vector(0,0,-2.5))
+    solid = cyl_outer.cut(cyl_inner)
+    obj = add_shape(solid, name)
+    return obj
+
+# SpaceCup module -> conical stack of cylinders
+def SpaceCup(name='SpaceCup'):
+    c1 = Part.makeCone(43/2,36/2,45)
+    c2 = Part.makeCone(45.5/2,45.2/2,6)
+    c2.translate(Vector(0,0,39))
+    c3 = Part.makeCylinder(50.8/2,1.5)
+    c3.translate(Vector(0,0,44))
+    unioned = fuse(fuse(c1,c2), c3)
+    return add_shape(unioned, name)
+
+# RotateStuff: helper that places children around circle - will return a compound
+def rotate_stuff(child_shape, radius=20, number=5, name='RotateStuff'):
+    comps = []
+    for i in range(number):
+        az = math.radians(i*(360.0/number))
+        x = radius*math.cos(az)
+        y = radius*math.sin(az)
+        sh = child_shape.copy()
+        sh.translate(Vector(x,y,0))
+        sh.rotate(Vector(0,0,0), Vector(0,0,1), math.degrees(az))
+        comps.append(sh)
+    compound = Part.makeCompound(comps)
+    return add_shape(compound, name)
+
+# TrucRond: approximated using revolve for square profile
+def TrucRond(rayon=30, numberModules=4, name='TrucRond'):
+    # create square profile centered at (rayon,0)
+    size = 3
+    half = size/2.0
+    p = [Vector(rayon-half, -half, 0), Vector(rayon+half, -half, 0), Vector(rayon+half, half, 0), Vector(rayon-half, half, 0), Vector(rayon-half, -half, 0)]
+    wire = Part.makePolygon(p)
+    face = Part.Face(wire)
+    # revolve face around Z to simulate rotate_extrude
+    rev = face.revolve(Vector(0,0,0), Vector(0,0,1), 360)
+    # add cylinders and rings
+    cyls = []
+    for i in range(numberModules):
+        az = math.radians(i*(360.0/numberModules))
+        x = rayon*math.cos(az)
+        y = rayon*math.sin(az)
+        c = Part.makeCylinder(2.5,8,Vector(x,y,-4))
+        cyls.append(c)
+    longrod = Part.makeCylinder(1.5, rayon)
+    longrod.rotate(Vector(0,0,0), Vector(1,0,0), -90)
+    ring1 = Part.makeCone(9,7,6)
+    ring1.translate(Vector(0,0,-3))
+    ring2 = Part.makeCone(7,9,6)
+    ring2.translate(Vector(0,0,3))
+    allshapes = [rev, longrod, ring1, ring2] + cyls
+    compound = Part.makeCompound(allshapes)
+    return add_shape(compound, name)
+
+# blocDoubleMoteurs: combine polygon extrudes and moteurs
+def blocDoubleMoteurs(name='blocDoubleMoteurs'):
+    # Create main extruded polygon with difference
+    poly_obj = polygonMoche(height=7, center=True, name=name+'_poly')
+    # scale/duplicate for inner subtraction
+    inner = poly_obj.Shape.copy()
+    # translate and scale approximation
+    inner.scale(0.95)
+    inner.translate(Vector(0,0,3))
+    main_shape = poly_obj.Shape.cut(inner)
+    # moteurs
+    moteur = moteurMoche(name=name+'_moteur1').Shape.copy()
+    m1 = moteur.copy(); m1.rotate(Vector(0,0,0), Vector(0,0,1), 0); m1.translate(Vector(7.6,0,-1))
+    m2 = moteur.copy(); m2.translate(Vector(-7.6,0,-1)); m2.scale(1.0)
+    # linear extrude polygonMoche taller
+    extr = Part.Shape(poly_obj.Shape).extrude(Vector(0,0,20))
+    # small cylinders below
+    c1 = Part.makeCylinder(4,18,Vector(0,0,-28)); c1.translate(Vector(0,0,0))
+    c2 = Part.makeCone(4,7,10); c2.translate(Vector(0,0,-36))
+    allshapes = [main_shape, m1, m2, extr, c1, c2]
+    comp = Part.makeCompound(allshapes)
+    return add_shape(comp, name)
+
+# centreMoche and column of modules
+def triangleMoche():
+    pts = [Vector(0,0,0), Vector(-10,12,0), Vector(10,12,0), Vector(0,0,0)]
+    wire = Part.makePolygon(pts)
+    face = Part.Face(wire)
+    return face
+
+def formeCentreMoche():
+    f1 = triangleMoche()
+    f2 = triangleMoche().copy()
+    f2.scale(0.9)
+    f2.translate(Vector(0,15,0))
+    union = f1.fuse(f2)
+    return union
+
+def centreMoche(name='centreMoche'):
+    face = formeCentreMoche()
+    solid = face.extrude(Vector(0,0,21))
+    solid.rotate(Vector(0,0,0), Vector(1,0,0), -90)
+    solid.translate(Vector(0,0,12))
+    return add_shape(solid, name)
+
+# create column of nbModules
+def column_of_modules(nbModules=16, largeurModule=25, name='column'):
+    comps = []
+    for i in range(nbModules):
+        cm = centreMoche(name + '_mod_%02d' % i).Shape.copy()
+        cm.translate(Vector(0, i*largeurModule, 0))
+        comps.append(cm)
+    rod1 = Part.makeCylinder(4, nbModules*largeurModule)
+    rod1.rotate(Vector(0,0,0), Vector(1,0,0), -90)
+    rod2 = Part.makeCylinder(6, nbModules*largeurModule)
+    rod2.rotate(Vector(0,0,0), Vector(1,0,0), -90)
+    rod2.translate(Vector(0,0,0.1))
+    comps.append(rod1); comps.append(rod2)
+    comp = Part.makeCompound(comps)
+    return add_shape(comp, name)
+
+# sphere module
+def module_sphere(r=35, pos=Vector(0,-30,0), name='module_sphere'):
+    s = Part.makeSphere(r)
+    s.translate(pos)
+    return add_shape(s, name)
+
+# Parabole and trucPlat
+def trucPlat(name='trucPlat'):
+    s = Part.makeSphere(30)
+    s.scale(0.2)
+    return add_shape(s, name)
+
+def parabole(name='parabole'):
+    # approximated dish using boolean between spheres and box
+    base = Part.makeBox(80,80,80,Vector(-60,-40,-40))
+    plate = Part.makeSphere(30)
+    plate.translate(Vector(0,0,0))
+    inner = plate.copy(); inner.scale(0.95); inner.translate(Vector(-1,0,0))
+    dish = plate.cut(base)
+    # small rod and sphere
+    rod = Part.makeBox(18,0.8,0.8,Vector(-4,-0.4,-0.4))
+    tip = Part.makeSphere(1.4)
+    comp = Part.makeCompound([dish, rod, tip])
+    return add_shape(comp, name)
+
+# nave_principal: assemble cylinders, torus approximations, etc.
+def nave_principal(name='nave_principal'):
+    shapes = []
+    body = Part.makeCylinder(10,40)
+    body.translate(Vector(0,0,0))
+    body.translate(Vector(0,0,20))
+    shapes.append(body)
+    # torus-like rings: make thin cylinders as approximations
+    for z in [25,30,35]:
+        ring = Part.makeTorus(10.5,0.6)
+        ring.translate(Vector(0,0,z))
+        shapes.append(ring)
+    stem = Part.makeCylinder(2.5,10)
+    stem.translate(Vector(13,0,25))
+    shapes.append(stem)
+    box = Part.makeBox(5,3,8,Vector(-15-2.5, -1.5, 16))
+    shapes.append(box)
+    globe = Part.makeSphere(10)
+    globe.translate(Vector(0,0,60))
+    globe.scale(1.2)
+    globe.translate(Vector(0,0,-6))
+    shapes.append(globe)
+    nose = Part.makeCone(12,3,10)
+    nose.rotate(Vector(0,0,0), Vector(1,0,0), 180)
+    nose.translate(Vector(0,0,0))
+    shapes.append(nose)
+    # fins
+    for a in [0,120,240]:
+        rad = math.radians(a)
+        box_f = Part.makeBox(0.5,5,6)
+        # position around
+        x = 15*math.cos(rad) - 0.25
+        y = 15*math.sin(rad) - 2.5
+        box_f.translate(Vector(x,y,17))
+        shapes.append(box_f)
+    comp = Part.makeCompound(shapes)
+    return add_shape(comp, name)
+
+# ISS style station modules
+
+def spine(len=120, rad=4, name='spine'):
+    c = Part.makeCylinder(rad, len)
+    c.rotate(Vector(0,0,0), Vector(1,0,0), 90)
+    return add_shape(c, name)
+
+def module_cylinder(pos=(0,0,0), r=6, h=20, name='module_cylinder'):
+    c = Part.makeCylinder(r,h)
+    c.translate(Vector(*pos))
+    return add_shape(c, name)
+
+def solar_panel(size=(60,2,0.5), offset=(0,15,0), name='solar_panel'):
+    b = Part.makeBox(size[0], size[1], size[2])
+    b.translate(Vector(offset[0]-size[0]/2, offset[1]-size[1]/2, offset[2]-size[2]/2))
+    return add_shape(b, name)
+
+def cross_frame(size=40, name='cross_frame'):
+    box1 = Part.makeBox(size,1,1)
+    box1.rotate(Vector(0,0,0), Vector(0,0,1), 45)
+    box2 = Part.makeBox(size,1,1)
+    box2.rotate(Vector(0,0,0), Vector(0,0,1), -45)
+    comp = Part.makeCompound([box1,box2])
+    return add_shape(comp, name)
+
+def yellow_container(size=(20,15,10), name='yellow_container'):
+    box = Part.makeBox(size[0], size[1], size[2])
+    box.translate(Vector(-size[0]/2, -size[1]/2, -size[2]/2))
+    # small black cylinder
+    cyl = Part.makeCylinder(1.5,6)
+    cyl.rotate(Vector(0,0,0), Vector(0,1,0), 90)
+    cyl.translate(Vector(size[0]/2 + 1, 0, 0))
+    comp = box.fuse(cyl)
+    return add_shape(comp, name)
+
+# hex dome approximated by extruded polygon
+
+def hex_dome(radius=20, height=10, name='hex_dome'):
+    # create hexagon points
+    pts = []
+    for a in range(0,360,60):
+        rad = math.radians(a)
+        pts.append(Vector(radius*math.cos(rad), radius*math.sin(rad), 0))
+    pts.append(pts[0])
+    wire = Part.makePolygon(pts)
+    face = Part.Face(wire)
+    dome = face.extrude(Vector(0,0,height))
+    return add_shape(dome, name)
+
+# turret_defense
+
+def turret_defense(pos=(0,0,0), name='turret_defense'):
+    base = Part.makeCylinder(5,3)
+    top = Part.makeCylinder(3,4)
+    top.translate(Vector(0,0,3))
+    bars = []
+    for x in [-1.5,1.5]:
+        b = Part.makeBox(0.6,6,0.6)
+        b.translate(Vector(x,3.5,6))
+        bars.append(b)
+    comp = base.fuse(top)
+    for b in bars:
+        comp = comp.fuse(b)
+    comp.translate(Vector(*pos))
+    return add_shape(comp, name)
+
+# reinforced_spine approximated by repeating hulls
+
+def reinforced_spine(length=80, name='reinforced_spine'):
+    parts = []
+    for i in range(0, length+1, 5):
+        a = Part.makeBox(1,2,1)
+        a.translate(Vector(-6,-1,i))
+        b = Part.makeBox(1,2,1)
+        b.translate(Vector(6,-1,i))
+        h = a.fuse(b)
+        h.rotate(Vector(0,0,0), Vector(1,0,0), 90)
+        parts.append(h)
+    comp = Part.makeCompound(parts)
+    comp.translate(Vector(0,0,0))
+    return add_shape(comp, name)
+
+# alien_antenna -> simple polyhedron
+
+def alien_antenna(pos=(0,0,0), scaleF=1, name='alien_antenna'):
+    pts = [Vector(0,0,0), Vector(10,0,0), Vector(5,10,0), Vector(5,5,15)]
+    faces = [[0,1,2],[0,1,3],[1,2,3],[2,0,3]]
+    # convert to Part shape
+    vlist = [p*scaleF for p in pts]
+    shell = Part.makeShell([Part.Face(Part.makePolygon([vlist[i] for i in f]+[vlist[f[0]]])) for f in faces])
+    solid = Part.makeSolid(shell)
+    solid.translate(Vector(*pos))
+    return add_shape(solid, name)
+
+# drone and escape_pod and rotating_radar
+
+def drone(pos=(0,0,0), size=4, name='drone'):
+    s = Part.makeSphere(size)
+    # two small prop rods
+    rods = []
+    for i in [-1,1]:
+        c = Part.makeCylinder(1.2,0.6)
+        c.rotate(Vector(0,0,0), Vector(0,0,1), 45*i)
+        c.translate(Vector(size+1,0,0))
+        rods.append(c)
+    comp = s
+    for r in rods:
+        comp = comp.fuse(r)
+    comp.translate(Vector(*pos))
+    return add_shape(comp, name)
+
+
+def escape_pod(pos=(0,0,0), name='escape_pod'):
+    box = Part.makeBox(4,4,4)
+    box.translate(Vector(-2,-2,0))
+    sph = Part.makeSphere(2)
+    sph.translate(Vector(0,0,6))
+    hull = box.fuse(sph)
+    cyl = Part.makeCylinder(1.5,1)
+    cyl.translate(Vector(0,0,0))
+    pod = hull.fuse(cyl)
+    pod.translate(Vector(*pos))
+    return add_shape(pod, name)
+
+
+def rotating_radar(pos=(0,0,0), name='rotating_radar'):
+    base = Part.makeCylinder(3.5,1.5)
+    arm = Part.makeBox(1,8,0.5)
+    arm.translate(Vector(-0.5,-4,1.5))
+    sphere = Part.makeSphere(1.3)
+    sphere.translate(Vector(0,0,3.5))
+    comp = base.fuse(arm).fuse(sphere)
+    comp.translate(Vector(*pos))
+    return add_shape(comp, name)
+
+# High-level assembly following OpenSCAD structure
+
+def assemble_everything():
+    # two blocs of engines rotated like original
+    bd1 = blocDoubleMoteurs('bloc_1')
+    bd1.Placement = placement_from_trf(translate=(0,0,0), rotate=(0,90,0))
+    bd2 = blocDoubleMoteurs('bloc_2')
+    bd2.Placement = placement_from_trf(translate=(0,-20,0), rotate=(0,90,0))
+
+    p3 = polygonTresMoche(name='poly3')
+    p3.Shape = p3.Shape.copy()
+    p3.Placement = placement_from_trf(translate=(-36,0,0), rotate=(90,0,90))
+
+    c1 = add_shape(Part.makeBox(20,20,20), 'cube_big')
+    c1.Placement = placement_from_trf(translate=(-80,2,0))
+    c2 = add_shape(Part.makeBox(10,10,10), 'cube_small')
+    c2.Placement = placement_from_trf(translate=(-80,35,-6))
+
+    col = column_of_modules()
+
+    rod = add_shape(Part.makeCylinder(4,16*25), 'rod_long')
+    rod.Placement = placement_from_trf(rotate=(-90,0,0))
+
+    sphere_mod = module_sphere()
+
+    par1 = parabole('parabole_main')
+    par1.Placement = placement_from_trf()
+    par2 = parabole('parabole_1'); par2.Placement = placement_from_trf(translate=(0,38.2,-17), rotate=(0,0,0))
+    par3 = parabole('parabole_2'); par3.Placement = placement_from_trf(translate=(0,-38.2,-17))
+    par4 = parabole('parabole_3'); par4.Placement = placement_from_trf(translate=(1.2,0,-17))
+
+    # extra long dish
+    ring = Part.makeCircle(3)
+    # place some cylinders specified in original
+    cylA = Part.makeCylinder(12,12)
+    cylA.rotate(Vector(0,0,0), Vector(0,1,0), 95)
+    cylA.translate(Vector(0,0,0))
+    add_shape(cylA, 'rotated_cylA')
+    cylB = Part.makeCylinder(6,10)
+    cylB.translate(Vector(16,0,-15))
+    add_shape(cylB, 'cylB')
+
+    nave = nave_principal()
+
+    # ISS style
+    iss = spine(name='iss_spine')
+    for z in [-40,0,40]:
+        module_cylinder(pos=(0,0,z), name='iss_cyl_%d'%z)
+    solar_panel(offset=(0,20,40), name='iss_solar1')
+    solar_panel(offset=(0,-20,-40), name='iss_solar2')
+    cross_frame(name='iss_cross')
+
+    # turrets
+    turret_defense(pos=(30,-40,0), name='turret1')
+    turret_defense(pos=(-30,-40,0), name='turret2')
+    turret_defense(pos=(30,40,0), name='turret3')
+    turret_defense(pos=(-30,40,0), name='turret4')
+
+    reinforced_spine(length=100, name='reinforced_spine')
+    alien_antenna(pos=(60,60,30), scaleF=0.6, name='alien1')
+    alien_antenna(pos=(-60,-60,30), scaleF=0.6, name='alien2')
+
+    drone(pos=(15,15,25), name='drone1')
+    drone(pos=(-20,10,28), name='drone2')
+    drone(pos=(10,-25,22), name='drone3')
+
+    escape_pod(pos=(40,-10,10), name='pod1')
+    escape_pod(pos=(-40,10,10), name='pod2')
+
+    rotating_radar(pos=(30,40,7), name='radar1')
+
+    base_station = add_shape(Part.makeCylinder(5,6), 'base_station')
+    base_station.Placement = placement_from_trf(translate=(0,0,60))
+
+    # torretas and arrays
+    torreta = turret_defense(pos=(10,10,65), name='torreta_array_1')
+
+    # final containers and dome
+    yellow_container(name='yellow_container')
+    hd = hex_dome(radius=15, height=10, name='hex_dome')
+    hd.Placement = placement_from_trf(translate=(0,0,-80))
+
+    doc.recompute()
+
+# Run assembly
+assemble_everything()
+
+# Fit view
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except Exception:
+    pass
+
+print('Macro ejecutada: modelo creado en el documento ' + DOCNAME)
