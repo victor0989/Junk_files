@@ -1,0 +1,110 @@
+# -*- coding: utf-8 -*-
+# SATELITE_IMAGEN_V3 – Con materiales, masa e inercia sumadas
+import FreeCAD as App
+import Part
+from math import sin, cos, radians
+from collections import namedtuple
+
+DOC_NAME = "SATELITE_IMAGEN_V3"
+
+# ----------- Materiales con propiedades físicas ------------------
+Material = namedtuple('Material', ['rho', 'E', 'k', 'alpha', 'emiss'])
+MATS = {
+    'Al_7075':      Material(2810, 71e9, 130, 23.6e-6, 0.09),
+    'CC_Composite': Material(1600, 30e9, 5,    2e-6,   0.85),
+    'MLI':          Material(150,  0.1e9, 0.05,10e-6,  0.03),
+    'Si_Solar':     Material(2330, 130e9, 150,  2.6e-6, 0.85),
+    'Batt_LiIon':   Material(2500, 10e9,  2,    15e-6,  0.4),
+    'Ti_Alloy':     Material(4500, 110e9, 6,    8.6e-6, 0.3),
+}
+
+total_mass = 0.0
+total_inertia = App.Vector(0,0,0)
+
+# ----------- Helpers ---------------------------------------------
+def get_doc():
+    doc = App.ActiveDocument
+    if doc is None or doc.Label != DOC_NAME:
+        try:
+            doc = App.getDocument(DOC_NAME)
+        except Exception:
+            doc = App.newDocument(DOC_NAME)
+    return doc
+
+def color_rgb(r,g,b): return (r/255.0, g/255.0, b/255.0)
+
+def add_shape(doc, shape, label, mat_key, color=None, transparency=0, parent=None):
+    global total_mass, total_inertia
+    obj = doc.addObject("Part::Feature", label)
+    obj.Shape = shape
+    if color:
+        obj.ViewObject.ShapeColor = color
+        obj.ViewObject.Transparency = transparency
+    # Propiedades físicas
+    mat = MATS[mat_key]
+    obj.addProperty("App::PropertyString","Material").Material = mat_key
+    vol_m3 = shape.Volume/1e9  # mm³ → m³
+    masa = vol_m3 * mat.rho
+    obj.addProperty("App::PropertyFloat","Masa_kg").Masa_kg = masa
+    I = shape.MatrixOfInertia
+    inertia_vec = App.Vector(I.A11*masa, I.A22*masa, I.A33*masa)
+    obj.addProperty("App::PropertyVector","Inercia_mm2kg").Inercia_mm2kg = inertia_vec
+    obj.addProperty("App::PropertyFloat","E_GPa").E_GPa = mat.E/1e9
+    obj.addProperty("App::PropertyFloat","k_WmK").k_WmK = mat.k
+    obj.addProperty("App::PropertyFloat","alpha_T").alpha_T = mat.alpha
+    obj.addProperty("App::PropertyFloat","emisividad").emisividad = mat.emiss
+    # Acumulados globales
+    total_mass += masa
+    total_inertia = App.Vector(total_inertia.x+inertia_vec.x,
+                               total_inertia.y+inertia_vec.y,
+                               total_inertia.z+inertia_vec.z)
+    if parent:
+        parent.addObject(obj)
+    return obj
+
+def box_centered(L, W, H, cx=0, cy=0, cz=0):
+    return Part.makeBox(L, W, H, App.Vector(cx - L/2.0, cy - W/2.0, cz - H/2.0))
+
+def cylinder_centered(r, h, axis='Z', cx=0, cy=0, cz=0):
+    c = Part.makeCylinder(r, h)
+    if axis == 'Z':
+        c.translate(App.Vector(cx, cy, cz - h/2.0))
+    elif axis == 'X':
+        c.rotate(App.Vector(0,0,0), App.Vector(0,1,0), 90)
+        c.translate(App.Vector(cx - h/2.0, cy, cz))
+    elif axis == 'Y':
+        c.rotate(App.Vector(0,0,0), App.Vector(1,0,0), -90)
+        c.translate(App.Vector(cx, cy - h/2.0, cz))
+    return c
+
+# ----------- Parámetros simples (ejemplo abreviado) ---------------
+P = {'SM_L':1500.0, 'SM_W':900.0, 'SM_H':900.0, 'MLI_t':3.0}
+
+# ----------- Construcción con materiales -------------------------
+doc = get_doc()
+
+# Bus principal
+bus_shape = box_centered(P['SM_L'], P['SM_W'], P['SM_H'])
+add_shape(doc, bus_shape, "SM_Bus", 'Al_7075', color_rgb(230,230,230))
+
+# MLI externo
+mli_outer = box_centered(P['SM_L']+2*P['MLI_t'], P['SM_W']+2*P['MLI_t'], P['SM_H']+2*P['MLI_t'])
+mli_shell = mli_outer.cut(bus_shape)
+add_shape(doc, mli_shell, "SM_MLI", 'MLI', color_rgb(255,224,128), transparency=70)
+
+# Ejemplo de panel solar
+panel_shape = box_centered(2000, 30, 900, cx=1500, cy=0, cz=0)
+add_shape(doc, panel_shape, "SA_Panel", 'Si_Solar', color_rgb(40,80,200), transparency=20)
+
+# Ejemplo de antena HGA
+dish_shape = Part.makeSphere(300).cut(box_centered(1000,1000,200))
+add_shape(doc, dish_shape, "HGA_Dish", 'CC_Composite', color_rgb(220,220,255))
+
+# Batería
+batt_shape = box_centered(400, 300, 200, cx=-500, cy=0, cz=-200)
+add_shape(doc, batt_shape, "Battery_1", 'Batt_LiIon', color_rgb(180,180,180))
+
+# ----------- Resumen global --------------------------------------
+doc.recompute()
+print(f"Masa total satélite: {total_mass:.1f} kg")
+print(f"Inercia total (kg·mm²): X={total_inertia.x:.2e}, Y={total_inertia.y:.2e}, Z={total_inertia.z:.2e}")

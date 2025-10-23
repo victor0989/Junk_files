@@ -1,0 +1,117 @@
+# FreeCAD macro: Tanque criogénico presurizado (simplificado, paramétrico)
+# Pegar en: FreeCAD -> Macro -> New, o en la consola Python
+import FreeCAD as App
+import Part, math
+
+doc = App.newDocument("TanqueCriogenico")
+
+# ---------- Parámetros (ajusta aquí) ----------
+D_j = 1.2        # diámetro jacket exterior (m)
+D_i = 1.05       # diámetro liner interior (m)
+L = 2.5          # longitud del cilindro (m)
+t_liner = 0.008  # espesor liner (m)
+gap = (D_j - D_i)/2.0  # aislamiento/espacio radial
+P_design = 3.0   # bar (informativo)
+n_supports = 6   # soportes térmicos
+# escala: FreeCAD units are mm by default; convert meters->mm
+mm = 1000.0
+D_j *= mm; D_i *= mm; L *= mm; t_liner *= mm; gap *= mm
+
+# ---------- Helper: create torispherical dome (approx using sphere cut) ----------
+def create_dome(radius_outer, height, name):
+    sphere = Part.makeSphere(radius_outer)
+    # cut sphere with plane to get dome cap (choose center)
+    plane_z = radius_outer - height
+    box = Part.makeBox(radius_outer*4, radius_outer*4, radius_outer*2)
+    box.translate(App.Vector(-radius_outer*2, -radius_outer*2, -radius_outer))
+    dome = sphere.cut(box)
+    dome_obj = doc.addObject("Part::Feature", name)
+    dome_obj.Shape = dome
+    return dome_obj
+
+# ---------- Create inner liner (cylinder + domes) ----------
+r_inner = D_i/2.0
+cyl_inner = Part.makeCylinder(r_inner, L)
+cyl_inner_obj = doc.addObject("Part::Feature", "LinerCylinder")
+cyl_inner_obj.Shape = cyl_inner
+
+# domes: approximate torispherical with sphere-cut height ~ r/4 (simple)
+dome_h = r_inner * 0.4
+dome1 = create_dome(r_inner, dome_h, "LinerDomeA")
+dome1.Placement = App.Placement(App.Vector(0,0,-dome_h), App.Rotation(0,0,0))
+dome2 = create_dome(r_inner, dome_h, "LinerDomeB")
+dome2.Placement = App.Placement(App.Vector(0,0,L), App.Rotation(0,0,0))
+
+# fuse liner parts
+liner_union = cyl_inner.fuse(dome1.Shape).fuse(dome2.Shape)
+liner_obj = doc.addObject("Part::Feature", "Liner")
+liner_obj.Shape = liner_union
+
+# ---------- Create jacket (outer cylinder) ----------
+r_jacket = D_j/2.0
+cyl_jack = Part.makeCylinder(r_jacket, L + 2*dome_h)  # make slightly longer for domes overlap
+jacket_obj = doc.addObject("Part::Feature", "JacketCylinder")
+jacket_obj.Shape = cyl_jack
+
+# create jacket domes (larger) and cut center to create hollow jacket
+dome_jack_h = r_jacket * 0.4
+jd1 = create_dome(r_jacket, dome_jack_h, "JacketDomeA")
+jd1.Placement = App.Placement(App.Vector(0,0,-dome_jack_h), App.Rotation(0,0,0))
+jd2 = create_dome(r_jacket, dome_jack_h, "JacketDomeB")
+jd2.Placement = App.Placement(App.Vector(0,0,L + 2*dome_h - (dome_jack_h)), App.Rotation(0,0,0))
+
+jacket_union = cyl_jack.fuse(jd1.Shape).fuse(jd2.Shape)
+# make inner hollow (subtract liner + gap)
+inner_cut = Part.makeCylinder(r_inner + gap*0.9, L + 2*dome_h)  # leave small tolerance
+inner_cut.translate(App.Vector(0,0,-dome_h))
+hollow_jacket = jacket_union.cut(inner_cut)
+jacket_final = doc.addObject("Part::Feature", "Jacket")
+jacket_final.Shape = hollow_jacket
+
+# ---------- Create mounting rings (flanges) ----------
+ring_thickness = 0.02 * mm
+ring_width = 0.08 * mm
+ring_r = r_jacket + ring_thickness
+ring = Part.makeTorus(ring_r, ring_width)  # torus used as ring proxy
+ring_obj = doc.addObject("Part::Feature", "MountRing")
+ring_obj.Shape = ring
+ring_obj.Placement = App.Placement(App.Vector(0,0,-ring_width*2), App.Rotation(0,0,0))
+
+# ---------- Create fill/vent ports (simplified cylinders) ----------
+port_r = 0.03 * mm
+port_len = 0.12 * mm
+# main feed port
+feed = Part.makeCylinder(port_r, port_len)
+feed.translate(App.Vector(r_inner + 0.02*mm, 0, L*0.5))
+feed_obj = doc.addObject("Part::Feature", "FeedPort")
+feed_obj.Shape = feed
+# purge port
+purge = Part.makeCylinder(port_r*0.8, port_len*0.8)
+purge.translate(App.Vector(-r_inner - 0.02*mm, 0, L*0.5))
+purge_obj = doc.addObject("Part::Feature", "PurgePort")
+purge_obj.Shape = purge
+
+# ---------- Thermal support struts (n_supports) ----------
+strut_r = 0.01*mm
+for i in range(n_supports):
+    angle = (2*math.pi / n_supports) * i
+    x = (r_jacket + r_inner)/2.0 * math.cos(angle)
+    y = (r_jacket + r_inner)/2.0 * math.sin(angle)
+    strut = Part.makeCylinder(strut_r, L*0.9)
+    # position strut along cylinder length
+    strut_vec = App.Vector(x, y, L*0.05)
+    strut.translate(strut_vec)
+    s_obj = doc.addObject("Part::Feature", "Strut_%d" % i)
+    s_obj.Shape = strut
+    # slight rotation not necessary for straight strut
+
+# ---------- PMD placeholder (internal vane) ----------
+vane = Part.makeBox(r_inner*0.95, 0.02*mm, L*0.6)
+vane.translate(App.Vector(-r_inner*0.95/2.0, 0, L*0.2))
+vane_obj = doc.addObject("Part::Feature", "PMD_Vane")
+vane_obj.Shape = vane
+
+# center view and recompute
+doc.recompute()
+App.Gui.SendMsgToActiveView("ViewFit")
+print("Macro completado: tanque creado (simplificado). Ajusta parámetros al inicio.")

@@ -1,0 +1,226 @@
+# -*- coding: utf-8 -*-
+# Macro: PropulsionSystem_1m
+# Requiere: FreeCAD (Workbench Part)
+import FreeCAD as App
+import Part
+import math
+
+doc = App.ActiveDocument or App.newDocument("PropulsionSystem_1m")
+
+# ------------------------------------------------------------
+# Parámetros principales (mm)
+# ------------------------------------------------------------
+P = dict(
+    # Carcasa
+    R_outer=220.0,            # radio exterior de la carcasa (Ø ext 440 mm)
+    t_wall=8.0,               # espesor pared carcasa
+    L_body=1002.0,            # longitud total objetivo del conjunto
+    flange_t=12.0,            # espesor de bridas
+    flange_over=24.0,         # sobre-dimensión radial de la brida
+
+    # Etapa química: cámara + tobera
+    L_chamber=199.0,          # cámara cilíndrica
+    R_chamber=160.0,          # radio exterior de cámara
+    L_conv=64.0,              # convergente hacia garganta
+    R_throat=65.0,            # radio garganta
+    L_div=175.0,              # divergente
+    R_exit=140.0,             # radio de salida
+    offset_chem=20.0,         # inicio relativo desde el frontal (tras brida)
+
+    chem_wall_t=5.0,          # espesor pared cámara+tobera
+
+    # Etapa nuclear
+    L_nuke=238.0,
+    R_core=70.0,              # núcleo
+    R_moderator=125.0,        # moderador externo
+    gap_cool=5.0,             # canal refrigeración entre núcleo y moderador
+    offset_nuke=None,         # (se calcula)
+
+    # Bobinas superconductoras (solenoide simple por toros)
+    coil_R=170.0,             # radio medio de bobina
+    coil_rwire=8.0,           # radio de hilo/conductor
+    coil_turns=10,
+    coil_span=143.0,          # longitud ocupada por el solenoide
+    offset_coil=None,         # (se calcula)
+
+    # Etapa plasma (boquilla campana simplificada por loft)
+    L_plasma=119.0,
+    R_plasma_in=160.0,
+    R_plasma_out=210.0,
+    offset_plasma=None,       # (se calcula)
+    plasma_wall_t=3.5,
+
+    # Canales de refrigeración (longitudinales, taladros)
+    n_channels=12,
+    r_channel=6.0,            # radio del taladro
+    channel_margin=2.0,       # margen desde el exterior
+)
+
+# Derivados y offsets en Z (secuenciados)
+R_i = P["R_outer"] - P["t_wall"]
+chem_z0 = P["offset_chem"]
+chem_z1 = chem_z0 + P["L_chamber"] + P["L_conv"] + P["L_div"]
+
+P["offset_nuke"]   = chem_z1 + 20.0
+nuke_z0 = P["offset_nuke"]
+nuke_z1 = nuke_z0 + P["L_nuke"]
+
+P["offset_plasma"] = nuke_z1 + 20.0
+plasma_z0 = P["offset_plasma"]
+plasma_z1 = plasma_z0 + P["L_plasma"]
+
+# Ubica el solenoide alrededor de la zona de transición nuclear→plasma
+P["offset_coil"] = max(nuke_z0 + 20.0, plasma_z0 - 12.0)
+
+# ------------------------------------------------------------
+# Utilidades geométricas
+# ------------------------------------------------------------
+def add_shape(shape, name):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    return obj
+
+def ring(Ro, Ri, h, base=App.Vector(0,0,0), axis=App.Vector(0,0,1)):
+    outer = Part.makeCylinder(Ro, h, base, axis)
+    inner = Part.makeCylinder(Ri, h, base, axis)
+    return outer.cut(inner)
+
+def revolved_solid_from_profile(points_xy, axis=App.Vector(0,0,1), angle=360):
+    # Perfil (r, z) en XY, cierra y revuelve alrededor de Z
+    pts = points_xy[:]
+    if pts[0] != pts[-1]:
+        pts.append(pts[0])
+    wire = Part.makePolygon([App.Vector(r, z, 0) for (r, z) in pts])
+    face = Part.Face(wire)
+    solid = face.revolve(App.Vector(0,0,0), axis, angle)
+    return solid
+
+def polar_ribs(n, R, z0, z1, width=18.0, thick=5.0):
+    h = abs(z1 - z0)
+    ribs = []
+    for i in range(n):
+        ang = 2*math.pi*i/n
+        cx = R*math.cos(ang)
+        cy = R*math.sin(ang)
+        b = Part.makeBox(width, thick, h, App.Vector(cx - width/2, cy - thick/2, min(z0, z1)))
+        b = b.rotate(App.Vector(cx, cy, min(z0,z1)), App.Vector(0,0,1), math.degrees(ang))
+        ribs.append(b)
+    return Part.makeCompound(ribs)
+
+# ------------------------------------------------------------
+# 1) Carcasa y bridas
+# ------------------------------------------------------------
+body_shell = ring(P["R_outer"], R_i, P["L_body"])
+fl_in = ring(P["R_outer"] + P["flange_over"], R_i, P["flange_t"])
+fl_out = ring(P["R_outer"] + P["flange_over"], R_i, P["flange_t"],
+              base=App.Vector(0,0,P["L_body"] - P["flange_t"]))
+casing = body_shell.fuse([fl_in, fl_out])
+add_shape(casing, "Casing")
+
+# ------------------------------------------------------------
+# 2) Etapa química: cámara + tobera (revolución)
+#    Perfil exterior e interior con espesor constante
+# ------------------------------------------------------------
+z0 = chem_z0
+L_total_chem = P["L_chamber"] + P["L_conv"] + P["L_div"]
+
+# Perfil exterior (r,z)
+pts_out = [
+    (0, z0),
+    (P["R_chamber"], z0),
+    (P["R_chamber"], z0 + P["L_chamber"]),
+    (P["R_throat"],  z0 + P["L_chamber"] + P["L_conv"]),
+    (P["R_exit"],    z0 + L_total_chem),
+    (0,              z0 + L_total_chem)
+]
+chem_solid = revolved_solid_from_profile(pts_out)
+
+# Perfil interior (r - espesor donde aplique)
+pts_in = []
+for (r, z) in pts_out:
+    if r == 0:
+        pts_in.append((0, z))
+    else:
+        rin = max(0.0, r - P["chem_wall_t"])
+        pts_in.append((rin, z))
+chem_inner = revolved_solid_from_profile(pts_in)
+
+chem_shell = chem_solid.cut(chem_inner)
+add_shape(chem_shell, "ChemicalStage")
+
+# ------------------------------------------------------------
+# 3) Etapa nuclear: núcleo y moderador (cilindros concéntricos)
+# ------------------------------------------------------------
+core = Part.makeCylinder(P["R_core"], P["L_nuke"], App.Vector(0,0,nuke_z0), App.Vector(0,0,1))
+moderator_outer = Part.makeCylinder(P["R_moderator"], P["L_nuke"], App.Vector(0,0,nuke_z0), App.Vector(0,0,1))
+moderator_inner = Part.makeCylinder(P["R_core"] + P["gap_cool"], P["L_nuke"], App.Vector(0,0,nuke_z0), App.Vector(0,0,1))
+moderator = moderator_outer.cut(moderator_inner)
+
+add_shape(core, "ReactorCore")
+add_shape(moderator, "Moderator")
+
+# ------------------------------------------------------------
+# 4) Bobinas superconductoras (toros discretos)
+# ------------------------------------------------------------
+torus_list = []
+if P["coil_turns"] > 1:
+    dz = P["coil_span"] / (P["coil_turns"] - 1)
+else:
+    dz = 0.0
+
+for i in range(P["coil_turns"]):
+    z = P["offset_coil"] + i*dz
+    torus = Part.makeTorus(P["coil_R"], P["coil_rwire"], App.Vector(0,0,z), App.Vector(0,0,1))
+    torus_list.append(torus)
+
+coils = Part.makeCompound(torus_list)
+add_shape(coils, "SuperconductingCoils")
+
+# ------------------------------------------------------------
+# 5) Etapa plasma (boquilla campana por loft con pared)
+# ------------------------------------------------------------
+sec1 = Part.makeCircle(P["R_plasma_in"], App.Vector(0,0,plasma_z0), App.Vector(0,0,1)).toShape()
+sec2 = Part.makeCircle(P["R_plasma_out"], App.Vector(0,0,plasma_z1), App.Vector(0,0,1)).toShape()
+loft_out = Part.makeLoft([Part.Wire(sec1.Edges), Part.Wire(sec2.Edges)], True)
+
+sec1_in = Part.makeCircle(max(1.0, P["R_plasma_in"] - P["plasma_wall_t"]), App.Vector(0,0,plasma_z0), App.Vector(0,0,1)).toShape()
+sec2_in = Part.makeCircle(max(1.0, P["R_plasma_out"] - P["plasma_wall_t"]), App.Vector(0,0,plasma_z1), App.Vector(0,0,1)).toShape()
+loft_in = Part.makeLoft([Part.Wire(sec1_in.Edges), Part.Wire(sec2_in.Edges)], True)
+
+plasma_shell = loft_out.cut(loft_in)
+add_shape(plasma_shell, "PlasmaBell")
+
+# ------------------------------------------------------------
+# 6) Canales de refrigeración (longitudinales) sobre la zona química
+#    Se modelan como cilindros a cortar (opcional)
+# ------------------------------------------------------------
+channels = []
+z_a = chem_z0
+z_b = chem_z1
+R_ch = P["R_outer"] - P["r_channel"] - P["channel_margin"]  # casi la piel exterior
+
+for i in range(P["n_channels"]):
+    ang = 2*math.pi*i/P["n_channels"]
+    cx = R_ch * math.cos(ang)
+    cy = R_ch * math.sin(ang)
+    cyl = Part.makeCylinder(P["r_channel"], (z_b - z_a), App.Vector(cx, cy, z_a), App.Vector(0,0,1))
+    channels.append(cyl)
+
+channels_comp = Part.makeCompound(channels)
+add_shape(channels_comp, "CoolingChannels_Chem")
+
+# Para realizar el corte en la carcasa, descomenta:
+# casing_cut = casing.cut(channels_comp)
+# add_shape(casing_cut, "Casing_WithChannels")
+
+# ------------------------------------------------------------
+# 7) Nervaduras (rigidizadores) alrededor de la etapa nuclear
+# ------------------------------------------------------------
+ribs = polar_ribs(n=10, R=P["R_outer"]*0.70, z0=nuke_z0, z1=nuke_z1, width=16.0, thick=4.0)
+add_shape(ribs, "Ribs_Nuclear")
+
+doc.recompute()
+
+print("Modelo generado.")
+print(f"Longitud total objetivo: {P['L_body']} mm")
+print(f"Química: z={chem_z0:.1f}→{chem_z1:.1f} mm | Nuclear: z={nuke_z0:.1f}→{nuke_z1:.1f} mm | Plasma: z={plasma_z0:.1f}→{plasma_z1:.1f} mm")

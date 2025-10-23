@@ -1,0 +1,139 @@
+# -*- coding: utf-8 -*-
+# FreeCAD macro: Sistema de combustible + tobera + interfaces nave (paramétrico)
+# Incluye puertos de conexión para integración con red de propelente de nave espacial
+# Compatible FreeCAD 0.20/0.21
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+doc = App.newDocument("SistemaCombustibleNave")
+
+# --------------------------
+# Parámetros generales
+# --------------------------
+params = {
+    "tank_D": 600.0, "tank_L": 1200.0, "tank_t": 3.0,
+    "cap_sag": 120.0,
+    "accum_D": 220.0, "accum_L": 500.0, "accum_t": 2.0,
+    "pipe_main_OD": 28.0, "pipe_main_t": 2.0,
+    "pipe_ret_OD": 18.0, "pipe_ret_t": 1.5,
+    "mini_valve_PCD": 36.0, "mini_valve_n": 4,
+    "flange_OD": 220.0, "flange_ID": 150.0, "flange_t": 12.0,
+    "flange_PCD": 190.0, "flange_n": 12, "flange_bolt_clear": 8.5,
+    "noz_throat": 110.0, "noz_exit": 260.0, "noz_len": 420.0, "noz_t": 2.2,
+    "z0_tank": 0.0, "z0_nozzle": -900.0,
+}
+
+# --------------------------
+# Función de patrón de tornillos
+# --------------------------
+def make_bolt_circle(base, n, PCD, hole_D, axis=App.Vector(0,0,1)):
+    holes = []
+    for i in range(n):
+        ang = 2*math.pi*i/n
+        x = (PCD/2)*math.cos(ang)
+        y = (PCD/2)*math.sin(ang)
+        cyl = Part.makeCylinder(hole_D/2, base.Shape.BoundBox.ZLength*1.2,
+                                base.Placement.Base.add(App.Vector(x,y,0)), axis)
+        holes.append(cyl)
+    cut = base.Shape.cut(Part.makeCompound(holes))
+    base.Shape = cut
+
+# --------------------------
+# 1) Tanque principal + puertos nave
+# --------------------------
+Ro = params["tank_D"]/2
+t_tank = params["tank_t"]
+Ri = Ro - t_tank
+L = params["tank_L"]
+sag = params["cap_sag"]
+
+Rcap = ((sag**2) + (Ro**2)) / (2*sag)
+z0 = params["z0_tank"]
+z_min = z0 - L/2
+z_max = z0 + L/2
+
+cyl_outer = Part.makeCylinder(Ro, L, App.Vector(0,0,z_min))
+sph_top = Part.makeSphere(Rcap, App.Vector(0,0,z_max + (Rcap - sag)))
+cap_top = sph_top.common(Part.makeBox(4*Ro,4*Ro,4*Rcap,App.Vector(-2*Ro,-2*Ro,z_max)))
+sph_bot = Part.makeSphere(Rcap, App.Vector(0,0,z_min - (Rcap - sag)))
+cap_bot = sph_bot.common(Part.makeBox(4*Ro,4*Ro,4*Rcap,App.Vector(-2*Ro,-2*Ro,z_min - 2*Rcap)))
+outer = cyl_outer.fuse([cap_top, cap_bot])
+
+cyl_inner = Part.makeCylinder(Ri, L, App.Vector(0,0,z_min))
+Rcap_in = ((sag**2) + (Ri**2)) / (2*sag)
+cap_top_in = Part.makeSphere(Rcap_in, App.Vector(0,0,z_max + (Rcap_in - sag))).common(cap_top)
+cap_bot_in = Part.makeSphere(Rcap_in, App.Vector(0,0,z_min - (Rcap_in - sag))).common(cap_bot)
+inner = cyl_inner.fuse([cap_top_in, cap_bot_in])
+
+tank_shell = outer.cut(inner)
+obj_tank = doc.addObject("Part::Feature", "Tanque_Combustible")
+obj_tank.Label = "Tanque Combustible Principal"
+obj_tank.Shape = tank_shell
+
+# Puertos de conexión
+puerto_fuel_out = Part.makeCylinder(15, 60, App.Vector(0, Ro, z_min+200), App.Vector(0,1,0))
+puerto_fuel_in  = Part.makeCylinder(15, 60, App.Vector(0, -Ro, z_max-200), App.Vector(0,-1,0))
+puerto_press    = Part.makeCylinder(8, 50, App.Vector(Ro*0.7,0,z_max), App.Vector(0,0,1))
+obj_tank.Shape = obj_tank.Shape.fuse([puerto_fuel_out, puerto_fuel_in, puerto_press])
+
+# --------------------------
+# 2) Brida motor-cámara
+# --------------------------
+fl_OD = params["flange_OD"]
+fl_ID = params["flange_ID"]
+fl_t = params["flange_t"]
+fl_PCD = params["flange_PCD"]
+fl_n = params["flange_n"]
+fl_bclr = params["flange_bolt_clear"]
+z_flange = params["z0_nozzle"]
+
+fl_outer = Part.makeCylinder(fl_OD/2, fl_t, App.Vector(0,0,z_flange - fl_t))
+fl_inner = Part.makeCylinder(fl_ID/2, fl_t*1.2, App.Vector(0,0,z_flange - fl_t*0.1))
+fl = fl_outer.cut(fl_inner)
+obj_flange = doc.addObject("Part::Feature", "Brida_Motor")
+obj_flange.Label = "Brida Motor-Cámara"
+obj_flange.Shape = fl
+make_bolt_circle(obj_flange, fl_n, fl_PCD, fl_bclr)
+
+# --------------------------
+# 3) Tobera
+# --------------------------
+rt = params["noz_throat"]/2
+re = params["noz_exit"]/2
+L_noz = params["noz_len"]
+t_noz = params["noz_t"]
+ri_inlet = fl_ID/2
+alpha_conv = 30.0*math.pi/180
+L_conv = (ri_inlet - rt) / math.tan(alpha_conv)
+L_div = max(5, L_noz - L_conv)
+
+p_in = App.Vector(ri_inlet + t_noz, 0, z_flange)
+p_th = App.Vector(rt + t_noz, 0, z_flange + L_conv)
+p_ex = App.Vector(re + t_noz, 0, z_flange + L_conv + L_div)
+pi_in = App.Vector(ri_inlet, 0, z_flange)
+pi_th = App.Vector(rt, 0, z_flange + L_conv)
+pi_ex = App.Vector(re, 0, z_flange + L_conv + L_div)
+wire_noz = Part.Wire([Part.makeLine(p_in, p_th), Part.makeLine(p_th, p_ex),
+                      Part.makeLine(p_ex, pi_ex), Part.makeLine(pi_ex, pi_th),
+                      Part.makeLine(pi_th, pi_in), Part.makeLine(pi_in, p_in)])
+face_noz = Part.Face(wire_noz)
+nozzle_solid = face_noz.revolve(App.Vector(0,0,0), App.Vector(0,0,1), 360)
+obj_nozzle = doc.addObject("Part::Feature", "Tobera")
+obj_nozzle.Label = "Tobera Propulsión"
+obj_nozzle.Shape = nozzle_solid
+
+# --------------------------
+# 4) Agrupar y vista
+# --------------------------
+grupo = doc.addObject("App::DocumentObjectGroup", "Sistema_Combustible_Nave")
+for comp in [obj_tank, obj_flange, obj_nozzle]:
+    grupo.addObject(comp)
+
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.fitAll()
+except:
+    pass

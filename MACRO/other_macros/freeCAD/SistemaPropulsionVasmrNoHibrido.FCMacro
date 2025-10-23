@@ -1,0 +1,199 @@
+# -*- coding: utf-8 -*-
+# Macro: PropulsionSystem_REAL
+# FreeCAD Workbench: Part
+import FreeCAD as App
+import Part
+import math
+
+doc = App.ActiveDocument or App.newDocument("PropulsionSystem_REAL")
+
+# ------------------------------------------------------------
+# Parámetros (mm)
+# ------------------------------------------------------------
+P = dict(
+    # Carcasa general
+    R_outer=250.0,    # radio exterior carcasa
+    t_wall=8.0,       # espesor pared
+    L_body=1300.0,
+    flange_t=15.0,
+    flange_over=25.0,
+
+    # Etapa química LOX/CH4 (perfil Rao simplificado)
+    L_chamber=300.0,
+    R_chamber=200.0,
+    L_conv=90.0,
+    R_throat=85.0,
+    L_div=250.0,
+    R_exit=180.0,
+    offset_chem=100.0,
+    chem_wall_t=5.0,
+
+    # Nuclear térmica
+    L_nuke=350.0,
+    R_core=90.0,
+    R_moderator=160.0,
+    gap_cool=6.0,
+
+    # Bobina superconductora helicoidal
+    coil_R=190.0,
+    coil_rwire=8.0,
+    coil_turns=12,
+    coil_pitch=17.0,
+
+    # Plasma (boquilla magnética)
+    L_plasma=180.0,
+    R_plasma_in=160.0,
+    R_plasma_out=240.0,
+    plasma_wall_t=4.0,
+
+    # Canales helicoidales
+    n_channels=8,
+    r_channel=6.0,
+    pitch_channel=40.0
+)
+
+# ------------------------------------------------------------
+# Utilidades
+# ------------------------------------------------------------
+def add_shape(shape, name, color=None):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    if color:
+        obj.ViewObject.ShapeColor = color
+    return obj
+
+def ring(Ro, Ri, h, base=App.Vector(0, 0, 0), axis=App.Vector(0, 0, 1)):
+    return Part.makeCylinder(Ro, h, base, axis).cut(
+        Part.makeCylinder(Ri, h, base, axis)
+    )
+
+def perfil_rao(L, Rt, Re):
+    # Perfil tipo Rao simplificado
+    return [(Rt, 0), (Rt, L * 0.382), (Re, L)]
+
+def revolved(points, z0):
+    pts = [(r, z0 + z) for (r, z) in points]
+    pts.append((0, z0 + pts[-1][1] - z0))
+    wire = Part.makePolygon([App.Vector(r, z, 0) for (r, z) in pts])
+    face = Part.Face(wire)
+    return face.revolve(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 360)
+
+# ------------------------------------------------------------
+# 1) Carcasa + bridas
+# ------------------------------------------------------------
+R_i = P["R_outer"] - P["t_wall"]
+body_shell = ring(P["R_outer"], R_i, P["L_body"])
+fl_in = ring(P["R_outer"] + P["flange_over"], R_i, P["flange_t"])
+fl_out = ring(
+    P["R_outer"] + P["flange_over"], R_i, P["flange_t"],
+    base=App.Vector(0, 0, P["L_body"] - P["flange_t"])
+)
+casing = body_shell.fuse([fl_in, fl_out])
+add_shape(casing, "Casing", (0.8, 0.8, 0.8))
+
+# ------------------------------------------------------------
+# 2) Química
+# ------------------------------------------------------------
+z0 = P["offset_chem"]
+
+# Cámara cilíndrica
+chamber_ext = Part.makeCylinder(P["R_chamber"], P["L_chamber"], App.Vector(0, 0, z0))
+chamber_int = Part.makeCylinder(P["R_chamber"] - P["chem_wall_t"], P["L_chamber"], App.Vector(0, 0, z0))
+chamber_shell = chamber_ext.cut(chamber_int)
+
+# Convergente
+z_conv0 = z0 + P["L_chamber"]
+conv_ext = Part.makeCone(P["R_chamber"], P["R_throat"], P["L_conv"], App.Vector(0, 0, z_conv0))
+conv_int = Part.makeCone(P["R_chamber"] - P["chem_wall_t"], P["R_throat"] - P["chem_wall_t"], P["L_conv"], App.Vector(0, 0, z_conv0))
+conv_shell = conv_ext.cut(conv_int)
+
+# Divergente (campana Rao)
+z_div0 = z_conv0 + P["L_conv"]
+rao_pts = perfil_rao(P["L_div"], P["R_throat"], P["R_exit"])
+div_ext = revolved(rao_pts, z_div0)
+rao_pts_in = [(max(0, r - P["chem_wall_t"]), z) for (r, z) in rao_pts]
+div_int = revolved(rao_pts_in, z_div0)
+div_shell = div_ext.cut(div_int)
+
+chem_stage = chamber_shell.fuse([conv_shell, div_shell])
+add_shape(chem_stage, "ChemicalStage", (0.9, 0.6, 0.3))
+
+# ------------------------------------------------------------
+# 3) Nuclear
+# ------------------------------------------------------------
+z_nuke0 = z_div0 + P["L_div"] + 20
+core = Part.makeCylinder(P["R_core"], P["L_nuke"], App.Vector(0, 0, z_nuke0))
+moderator_ext = Part.makeCylinder(P["R_moderator"], P["L_nuke"], App.Vector(0, 0, z_nuke0))
+moderator_int = Part.makeCylinder(P["R_core"] + P["gap_cool"], P["L_nuke"], App.Vector(0, 0, z_nuke0))
+moderator_shell = moderator_ext.cut(moderator_int)
+add_shape(core, "ReactorCore", (0.5, 0.5, 0.5))
+add_shape(moderator_shell, "Moderator", (0.3, 0.3, 0.3))
+
+# ------------------------------------------------------------
+# 4) Bobina helicoidal continua
+# ------------------------------------------------------------
+helix_path = Part.makeHelix(P["coil_pitch"], P["coil_turns"] * P["coil_pitch"], P["coil_R"], angle=0)
+wire_circle = Part.Wire(
+    Part.makeCircle(P["coil_rwire"], App.Vector(P["coil_R"], 0, z_nuke0), App.Vector(0, 0, 1)).Edges
+)
+coil_solid = Part.Wire(wire_circle).makePipeShell([helix_path], True, True)
+add_shape(coil_solid, "SuperconductingCoil", (0.2, 0.4, 0.8))
+
+# ------------------------------------------------------------
+# 5) Plasma (loft)
+# ------------------------------------------------------------
+z_plasma0 = z_nuke0 + P["L_nuke"] + 20
+sec1 = Part.Wire(Part.makeCircle(P["R_plasma_in"], App.Vector(0, 0, z_plasma0), App.Vector(0, 0, 1)).Edges)
+sec2 = Part.Wire(Part.makeCircle(P["R_plasma_out"], App.Vector(0, 0, z_plasma0 + P["L_plasma"]), App.Vector(0, 0, 1)).Edges)
+loft_out = Part.makeLoft([sec1, sec2], True)
+sec1i = Part.Wire(Part.makeCircle(P["R_plasma_in"] - P["plasma_wall_t"], App.Vector(0, 0, z_plasma0), App.Vector(0, 0, 1)).Edges)
+sec2i = Part.Wire(Part.makeCircle(P["R_plasma_out"] - P["plasma_wall_t"], App.Vector(0, 0, z_plasma0 + P["L_plasma"]), App.Vector(0, 0, 1)).Edges)
+loft_in = Part.makeLoft([sec1i, sec2i], True)
+plasma_shell = loft_out.cut(loft_in)
+add_shape(plasma_shell, "PlasmaBell", (0.8, 0.2, 0.2))
+
+# ------------------------------------------------------------
+# 6) Canales helicoidales de refrigeración (química)
+# ------------------------------------------------------------
+helix_channels = []
+L_chem = P["L_chamber"] + P["L_conv"] + P["L_div"]
+z_chem0 = P["offset_chem"]
+
+# Radio de la hélice (centro del canal), dejando margen a la pared exterior
+R_center = P["R_outer"] - P["t_wall"] - P["r_channel"] - 2.0
+
+for i in range(P["n_channels"]):
+    ang_offset = (360.0 / P["n_channels"]) * i
+
+    # Espina helicoidal posicionada y rotada en Z
+    helix = Part.makeHelix(P["pitch_channel"], L_chem, R_center, angle=0)
+    helix.Placement = App.Placement(
+        App.Vector(0, 0, z_chem0),
+        App.Rotation(App.Vector(0, 0, 1), ang_offset),
+        App.Vector(0, 0, 0)
+    )
+
+    # Perfil circular del canal en el inicio de la hélice
+    sec = Part.makeCircle(
+        P["r_channel"],
+        App.Vector(R_center, 0, z_chem0),
+        App.Vector(0, 0, 1)
+    ).toShape()
+    sec_wire = Part.Wire(sec.Edges)
+
+    # Barrido sólido a lo largo de la hélice
+    channel_solid = sec_wire.makePipeShell([helix], True, True)
+    helix_channels.append(channel_solid)
+
+# Conjunto de canales como compound
+channels_comp = Part.makeCompound(helix_channels)
+add_shape(channels_comp, "CoolingChannels_Helical", (0.2, 0.7, 0.2))
+
+# Booleanos opcionales para taladrar carcasa y etapa química
+# casing_cut = doc.getObject("Casing").Shape.cut(channels_comp)
+# doc.getObject("Casing").Shape = casing_cut
+# chem_cut = doc.getObject("ChemicalStage").Shape.cut(channels_comp)
+# doc.getObject("ChemicalStage").Shape = chem_cut
+
+doc.recompute()
+print("Canales helicoidales generados.")

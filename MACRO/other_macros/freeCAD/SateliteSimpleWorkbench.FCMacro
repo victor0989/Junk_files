@@ -1,0 +1,80 @@
+import FreeCAD as App
+import Part
+
+DOC_NAME = "SATELITE_COMPLEJO"
+
+def get_doc():
+    doc = App.ActiveDocument
+    if doc is None or doc.Label != DOC_NAME:
+        try:
+            doc = App.getDocument(DOC_NAME)
+        except Exception:
+            doc = App.newDocument(DOC_NAME)
+    return doc
+
+def add_shape(doc, shape, name, color=None, transparency=0, parent=None):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Label = name
+    obj.Shape = shape
+    if color:
+        obj.ViewObject.ShapeColor = color
+        obj.ViewObject.Transparency = transparency
+    if parent:
+        parent.addObject(obj)
+    return obj
+
+# --- Parámetros aproximados según geometría CAD ---
+P = {
+    'SM_L':1500, 'SM_W':900, 'SM_H':900,
+    'PM_D':800, 'Arm_L':800, 'Arm_D':80,
+    'Panel_L':2000, 'Panel_W':900, 'Panel_t':30,
+    'HGA_D':600, 'HGA_depth':200,
+    'Tank_D':300, 'Tank_L':800,
+    'Main_D':200, 'Main_L':300
+}
+
+doc = get_doc()
+
+# --- Estructura ---
+SM = Part.makeBox(P['SM_L'], P['SM_W'], P['SM_H'])
+SM.translate(App.Vector(-P['SM_L']/2, -P['SM_W']/2, -P['SM_H']/2))
+add_shape(doc, SM, "Modulo_servicio", (0.8,0.8,0.8))
+
+# Payload esfera
+PM = Part.makeSphere(P['PM_D']/2)
+PM.translate(App.Vector(P['SM_L']/2 + P['PM_D']/2 + 50, 0, 0))
+add_shape(doc, PM, "Payload_Module", (0.6,0.6,1.0))
+
+# Paneles y brazos solares
+for side in (-1, 1):
+    brazo = Part.makeCylinder(P['Arm_D']/2, P['Arm_L'])
+    brazo.rotate(App.Vector(0,0,0), App.Vector(1,0,0), 90)
+    brazo.translate(App.Vector(0, side*(P['SM_W']/2 + P['Arm_L']/2), 0))
+    add_shape(doc, brazo, f"Brazo_solar_{'izq' if side>0 else 'der'}", (0.6,0.6,0.6))
+    panel = Part.makeBox(P['Panel_L'], P['Panel_t'], P['Panel_W'])
+    panel.translate(App.Vector(-P['Panel_L']/2, side*(P['SM_W']/2 + P['Arm_L'] + P['Panel_t']/2), -P['Panel_W']/2))
+    add_shape(doc, panel, f"Panel_solar_{'izq' if side>0 else 'der'}", (0.1,0.2,0.8), 20)
+
+# HGA: plato como calota esférica
+hga_sphere = Part.makeSphere(P['HGA_D']/2)
+cut_plane = Part.makeBox(P['HGA_D'], P['HGA_D'], P['HGA_D'])
+cut_plane.translate(App.Vector(-P['HGA_D']/2, -P['HGA_D']/2, -P['HGA_depth']))
+dish = hga_sphere.cut(cut_plane)
+dish.translate(App.Vector(P['SM_L']/2 + 200, -200, 100))
+add_shape(doc, dish, "Antena_HGA", (0.9,0.9,1.0))
+
+# Tanques de propelente
+for side in (-1, 1):
+    tank = Part.makeCylinder(P['Tank_D']/2, P['Tank_L'])
+    tank.rotate(App.Vector(0,0,0), App.Vector(0,1,0), 90)
+    tank.translate(App.Vector(0, side*200, -P['SM_H']/2 - P['Tank_D']/2 - 40))
+    add_shape(doc, tank, f"Tanque_{'A' if side>0 else 'B'}", (0.7,0.8,0.8))
+
+# Motores principales
+for pos in (-200, 200):
+    motor = Part.makeCylinder(P['Main_D']/2, P['Main_L'])
+    motor.translate(App.Vector(pos, 0, -P['SM_H']/2 - P['Main_L']))
+    add_shape(doc, motor, f"Motor_principal_{pos}", (0.5,0.5,0.6))
+
+doc.recompute()
+print("Modelo SATELITE_COMPLEJO creado.")

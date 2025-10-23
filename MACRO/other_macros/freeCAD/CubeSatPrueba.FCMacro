@@ -1,0 +1,270 @@
+# CubeSat complejo paramétrico — FreeCAD 0.20+
+# Sistemas: Estructura, Potencia, Propulsión, ADCS, Comms, Payload
+# Unidades: metros (1U = 0.1 m)
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, math
+
+doc = App.newDocument("CubeSat_Complex")
+
+# -------------------------
+# Parámetros globales
+# -------------------------
+p = {
+    # Formato CubeSat
+    "u_size": 0.10,     # 1U = 0.1 m
+    "units": 3,         # 3U por defecto (ajusta 1, 2, 3, 6, etc.)
+    # Estructura
+    "wall_thk": 0.002,
+    "rail_w": 0.008,    # ancho de raíl exterior
+    "rail_h": 0.008,    # alto de raíl exterior (cuadrado)
+    "frame_bar": 0.008, # barras interiores del bastidor
+    "deck_thk": 0.002,
+    "deck_count": 4,
+    # PC/104 (EPS/Aviónica)
+    "pcb_count": 6,
+    "pcb_thk": 0.0016,
+    "pcb_gap": 0.010,
+    "standoff_r": 0.002,
+    # Potencia
+    "panel_thk": 0.0012,
+    "hinge_r": 0.004,
+    # Baterías
+    "bat_w": 0.060, "bat_d": 0.030, "bat_h": 0.040,
+    # Propulsión
+    "tank_r": 0.028, "tank_L": 0.16,            # dos tanques laterales
+    "line_r": 0.003,                             # tuberías
+    "thr_cone_r1": 0.007, "thr_cone_r2": 0.002, "thr_cone_h": 0.020, "thr_cant_deg": 15.0,
+    # ADCS
+    "rw_r": 0.020, "rw_h": 0.010,                # ruedas de reacción
+    # Comms
+    "monopole_r": 0.0015, "monopole_L": 0.25,    # antena desplegable
+    "patch_w": 0.050, "patch_h": 0.050, "patch_t": 0.004,
+    # Payload
+    "payload_h": 0.10,                           # altura reservada payload en extremo superior
+    # Térmico
+    "rad_w": 0.10, "rad_h": 0.20, "rad_t": 0.003,
+    "strap_w": 0.006, "strap_t": 0.001
+}
+
+# Derivados
+U = p["u_size"]
+L = U; W = U; H = U * p["units"]
+
+# -------------------------
+# Utilidades
+# -------------------------
+def add_part(shape, name, color=(0.8,0.8,0.8), alpha=0.0, parent=None):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    obj.ViewObject.ShapeColor = color
+    obj.ViewObject.Transparency = int(alpha*100)
+    if parent:
+        parent.addObject(obj)
+    return obj
+
+def new_group(name):
+    grp = doc.addObject("App::Part", name)
+    return grp
+
+def box(w,d,h, pos=(0,0,0)):
+    b = Part.makeBox(w,d,h, App.Vector(*pos))
+    return b
+
+def cyl(r,h, pos=(0,0,0), dir=(0,0,1)):
+    return Part.makeCylinder(r, h, App.Vector(*pos), App.Vector(*dir))
+
+def cone(r1,r2,h, pos=(0,0,0), dir=(0,0,1)):
+    return Part.makeCone(r1, r2, h, App.Vector(*pos), App.Vector(*dir))
+
+def rotate(vec, axis, deg):
+    rot = App.Rotation(App.Vector(*axis), deg)
+    v = App.Vector(*vec)
+    v2 = rot.multVec(v)
+    return (v2.x, v2.y, v2.z)
+
+# -------------------------
+# Contenedores por sistema
+# -------------------------
+g_struct = new_group("Estructura")
+g_power  = new_group("Potencia")
+g_prop   = new_group("Propulsion")
+g_adcs   = new_group("ADCS")
+g_comms  = new_group("Comunicaciones")
+g_pl     = new_group("Payload")
+
+# -------------------------
+# 1) Estructura: carcasa + raíles + bastidor + decks
+# -------------------------
+# Carcasa
+outer = box(L,W,H,(0,0,0))
+inner = box(L-2*p["wall_thk"], W-2*p["wall_thk"], H-2*p["wall_thk"], (p["wall_thk"], p["wall_thk"], p["wall_thk"]))
+shell = outer.cut(inner)
+add_part(shell, "Carcasa", (0.75,0.75,0.78), 0.0, g_struct)
+
+# Raíles (4 esquinas exteriores)
+rail = box(p["rail_w"], p["rail_h"], H, (0,0,0))
+rails = []
+positions = [
+    (0,0,0), (L-p["rail_w"],0,0), (0,W-p["rail_h"],0), (L-p["rail_w"], W-p["rail_h"],0)
+]
+for i,pos in enumerate(positions):
+    rails.append(add_part(rail.copy().translate(App.Vector(*pos)) or rail, f"Rail_{i+1}", (0.60,0.60,0.65), 0.0, g_struct))
+
+# Bastidor interior (barras en aristas internas)
+fb = p["frame_bar"]; t = p["wall_thk"]
+# Verticales en las 4 esquinas internas
+for i,(x,y) in enumerate([(t,t),(L-t-fb,t),(t,W-t-fb),(L-t-fb,W-t-fb)]):
+    add_part(box(fb,fb,H-2*t,(x,y,t)), f"Frame_V_{i+1}", (0.50,0.50,0.55), 0.0, g_struct)
+# Decks (planchas horizontales)
+for k in range(p["deck_count"]):
+    z = t + (H-2*t - p["deck_thk"]) * (k+1)/(p["deck_count"]+1)
+    add_part(box(L-2*t, W-2*t, p["deck_thk"], (t,t,z)), f"Deck_{k+1}", (0.70,0.70,0.75), 0.0, g_struct)
+
+# -------------------------
+# 2) Potencia: paneles solares con bisagras, baterías, EPS
+# -------------------------
+panel_len = H
+panel_w   = L
+pthk      = p["panel_thk"]
+hinge_r   = p["hinge_r"]
+# Paneles laterales (2 desplegables a lo largo del eje Z)
+# Lado Y = -pthk (fuera) y Y = W
+pan1 = box(panel_w, pthk, panel_len, (0, -pthk, 0))
+pan2 = box(panel_w, pthk, panel_len, (0, W, 0))
+add_part(pan1, "PanelSolar_A", (0.1,0.2,0.8), 0.0, g_power)
+add_part(pan2, "PanelSolar_B", (0.1,0.2,0.8), 0.0, g_power)
+# Bisagras (cilindros a lo largo de Z)
+add_part(cyl(hinge_r, panel_len, (0,0,0),(0,0,1)), "Bisagra_A", (0.2,0.2,0.2), 0.0, g_power)
+add_part(cyl(hinge_r, panel_len, (L, W, 0),(0,0,1)), "Bisagra_B", (0.2,0.2,0.2), 0.0, g_power)
+
+# Baterías (bloque)
+bat = box(p["bat_w"], p["bat_d"], p["bat_h"], (t*2, t*2, t*2))
+add_part(bat, "BateriaPack", (0.20,0.20,0.20), 0.0, g_power)
+
+# EPS (placa y caja)
+eps = box(0.09, 0.06, 0.02, (L-0.09-t*2, t*2, t*2))
+add_part(eps, "EPS_Box", (0.25,0.30,0.35), 0.0, g_power)
+
+# -------------------------
+# 3) Aviónica: stack PC/104 con standoffs
+# -------------------------
+pcb_w = L-2*(t+0.004); pcb_d = W-2*(t+0.004)
+z0 = t + 0.06
+for i in range(p["pcb_count"]):
+    z = z0 + i*(p["pcb_thk"] + p["pcb_gap"])
+    board = box(pcb_w, pcb_d, p["pcb_thk"], ( (L-pcb_w)/2, (W-pcb_d)/2, z))
+    add_part(board, f"PCB_{i+1}", (0.05,0.45,0.25), 0.0, g_struct)
+# Standoffs en 4 esquinas del stack
+st_h = p["pcb_count"]*(p["pcb_thk"]+p["pcb_gap"])
+sx = (L-pcb_w)/2 + 0.006; sy = (W-pcb_d)/2 + 0.006
+for i,(dx,dy) in enumerate([(sx,sy),(L-sx,sy),(sx,W-sy),(L-sx,W-sy)]):
+    add_part(cyl(p["standoff_r"], st_h, (dx, dy, z0)), f"Standoff_{i+1}", (0.7,0.7,0.7), 0.0, g_struct)
+
+# -------------------------
+# 4) Propulsión: tanques, líneas y propulsores
+# -------------------------
+# Dos tanques laterales alineados en Z
+tank_offset = 0.015
+tank_z0 = H/2 - p["tank_L"]/2
+tankL = cyl(p["tank_r"], p["tank_L"], (t + p["tank_r"]+tank_offset, t + p["tank_r"]+tank_offset, tank_z0), (0,0,1))
+tankR = cyl(p["tank_r"], p["tank_L"], (L - t - p["tank_r"]-tank_offset, W - t - p["tank_r"]-tank_offset, tank_z0), (0,0,1))
+add_part(tankL, "Tank_L", (0.90,0.90,0.95), 0.0, g_prop)
+add_part(tankR, "Tank_R", (0.90,0.90,0.95), 0.0, g_prop)
+
+# Colector/manifold central
+manifold = cyl(0.010, 0.030, (L/2, W/2, H/2 - 0.015), (0,0,1))
+add_part(manifold, "Manifold", (0.6,0.6,0.65), 0.0, g_prop)
+
+# Líneas de propelente (cilindros delgados)
+def tube(p1, p2, r):
+    # Crea un cilindro entre dos puntos
+    v = App.Vector(*p2) - App.Vector(*p1)
+    h = v.Length
+    if h < 1e-6:
+        return None
+    dir = (v.x, v.y, v.z)
+    return cyl(r, h, p1, dir)
+
+lines = []
+# Desde cada tanque al manifold
+lines.append(tube((t + p["tank_r"]+tank_offset, t + p["tank_r"]+tank_offset, tank_z0 + p["tank_L"]),
+                  (L/2, W/2, H/2), p["line_r"]))
+lines.append(tube((L - t - p["tank_r"]-tank_offset, W - t - p["tank_r"]-tank_offset, tank_z0 + p["tank_L"]),
+                  (L/2, W/2, H/2), p["line_r"]))
+
+for i,ln in enumerate([l for l in lines if l]):
+    add_part(ln, f"FuelLine_{i+1}", (0.8,0.7,0.2), 0.0, g_prop)
+
+# Propulsores en cara inferior (Z ~ t), cantados hacia afuera
+thrZ = t
+cant = p["thr_cant_deg"]
+corner_pts = [
+    (t*2, t*2, thrZ), (L-t*2, t*2, thrZ), (t*2, W-t*2, thrZ), (L-t*2, W-t*2, thrZ)
+]
+dirs = []
+for (x,y,_) in corner_pts:
+    # Vector saliente con inclinación de 'cant' respecto a +Z
+    # Apunta ligeramente hacia fuera (radial) y hacia -Z
+    cx = (x - L/2); cy = (y - W/2)
+    v = App.Vector(cx, cy, - (L+W)/6.0)  # componente negativa en Z
+    v = v.normalize()
+    # Rotación alrededor del eje ortogonal para ajustar cant si se desea (aprox)
+    dirs.append((v.x, v.y, v.z))
+
+for i,(pt,dirv) in enumerate(zip(corner_pts, dirs)):
+    add_part(cone(p["thr_cone_r1"], p["thr_cone_r2"], p["thr_cone_h"], pt, dirv), f"Thruster_{i+1}", (0.85,0.85,0.90), 0.0, g_prop)
+    # Línea desde manifold al propulsor
+    ln = tube((L/2, W/2, H/2), (pt[0], pt[1], pt[2]+p["thr_cone_h"]*dirv[2]), p["line_r"])
+    if ln:
+        add_part(ln, f"FuelLine_Thr_{i+1}", (0.8,0.7,0.2), 0.0, g_prop)
+
+# -------------------------
+# 5) ADCS: ruedas de reacción y star tracker
+# -------------------------
+# Tres ruedas en ejes X,Y,Z cerca del centro
+add_part(cyl(p["rw_r"], p["rw_h"], (L/2 - p["rw_r"], W/2, H/2 - p["rw_h"]/2), (1,0,0)), "RW_X", (0.3,0.3,0.35), 0.0, g_adcs)
+add_part(cyl(p["rw_r"], p["rw_h"], (L/2, W/2 - p["rw_r"], H/2 - p["rw_h"]/2), (0,1,0)), "RW_Y", (0.3,0.3,0.35), 0.0, g_adcs)
+add_part(cyl(p["rw_r"], p["rw_h"], (L/2, W/2, H/2 - p["rw_h"]), (0,0,1)), "RW_Z", (0.3,0.3,0.35), 0.0, g_adcs)
+
+# Star tracker (caja + apertura) en cara superior
+st_box = box(0.06, 0.05, 0.04, (L/2-0.03, W/2-0.025, H - t - 0.04))
+st_ap  = cyl(0.015, 0.03, (L/2, W/2, H - t - 0.01), (0,0,1))
+add_part(st_box.fuse(st_ap), "StarTracker", (0.4,0.45,0.6), 0.0, g_adcs)
+
+# -------------------------
+# 6) Comunicaciones: antenas
+# -------------------------
+# Monopolo desplegable en cara superior
+add_part(cyl(p["monopole_r"], p["monopole_L"], (t*2, t*2, H), (0,0,1)), "Antenna_Monopole", (0.9,0.9,0.9), 0.0, g_comms)
+# Patch lateral
+patch = box(p["patch_w"], p["patch_t"], p["patch_h"], (L/2 - p["patch_w"]/2, -p["patch_t"], H/2 - p["patch_h"]/2))
+add_part(patch, "Antenna_Patch", (0.95,0.85,0.25), 0.0, g_comms)
+
+# -------------------------
+# 7) Payload y gestión térmica
+# -------------------------
+# Volumen payload reservado en el extremo superior
+pl_h = p["payload_h"]
+pl_box = box(L-2*t, W-2*t, pl_h, (t, t, H - t - pl_h))
+add_part(pl_box, "Payload_Volume", (0.6,0.8,0.9), 0.70, g_pl)
+
+# Radiador externo en una cara
+rad = box(p["rad_w"], p["rad_t"], p["rad_h"], (L/2 - p["rad_w"]/2, W, H/2 - p["rad_h"]/2))
+add_part(rad, "Radiator", (0.85,0.85,0.9), 0.0, g_pl)
+
+# Thermal straps desde batería a radiador (dos cintas)
+strap1 = box(p["strap_w"], p["strap_t"], 0.12, (t*2 + p["bat_w"]/2, W - t - p["strap_t"], 0.08))
+strap2 = box(p["strap_w"], p["strap_t"], 0.12, (t*2 + p["bat_w"]/2 + 0.015, W - t - p["strap_t"], 0.08))
+add_part(strap1, "ThermalStrap_1", (0.85,0.75,0.55), 0.0, g_pl)
+add_part(strap2, "ThermalStrap_2", (0.85,0.75,0.55), 0.0, g_pl)
+
+# -------------------------
+# Vista y metadatos
+# -------------------------
+doc.recompute()
+Gui.activeView().viewAxonometric()
+Gui.SendMsgToActiveView("ViewFit")
+
+print("Modelo CubeSat generado.")
+print(f"Dimensiones exteriores: {L:.3f} x {W:.3f} x {H:.3f} m (L x W x H)")

@@ -1,0 +1,134 @@
+import FreeCAD as App
+import Part
+
+DOC_NAME = "SATELITE_RESISTENTE"
+
+def get_doc():
+    doc = App.ActiveDocument
+    if doc is None or doc.Label != DOC_NAME:
+        try:
+            doc = App.getDocument(DOC_NAME)
+        except Exception:
+            doc = App.newDocument(DOC_NAME)
+    return doc
+
+def new_part(doc, label, parent=None):
+    p = doc.addObject("App::Part", label)
+    p.Label = label
+    if parent:
+        parent.addObject(p)
+    return p
+
+def add_shape(doc, shape, name, color=None, transparency=0, parent=None):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Label = name
+    obj.Shape = shape
+    if color:
+        obj.ViewObject.ShapeColor = color
+        obj.ViewObject.Transparency = transparency
+    if parent:
+        parent.addObject(obj)
+    return obj
+
+def color_rgb(r,g,b):
+    return (r/255.0, g/255.0, b/255.0)
+
+# --- Parámetros estructurales ---
+P = {
+    'SM_L':1500, 'SM_W':900, 'SM_H':900,
+    'PM_D':800, 'Arm_L':800, 'Arm_D':80,
+    'Panel_L':2000, 'Panel_W':900, 'Panel_t':30,
+    'HGA_D':600, 'HGA_depth':200,
+    'Tank_D':300, 'Tank_L':800,
+    'Main_D':200, 'Main_L':300,
+    'Mast_L':1200, 'Mast_D':60,
+    'Sensor_D':100, 'Sensor_L':200,
+    'Star_D':80, 'Star_L':150
+}
+
+doc = get_doc()
+
+# --- Raíz del satélite ---
+root = new_part(doc, "SATELITE_RESISTENTE")
+
+# --- 1. ESTRUCTURA ---
+estructura = new_part(doc, "1_ESTRUCTURA", root)
+
+# Módulo de servicio reforzado
+SM = Part.makeBox(P['SM_L'], P['SM_W'], P['SM_H'])
+SM.translate(App.Vector(-P['SM_L']/2, -P['SM_W']/2, -P['SM_H']/2))
+add_shape(doc, SM, "Modulo_servicio", color_rgb(255,255,100), 0, estructura)
+
+# Refuerzos laterales
+for side in (-1, 1):
+    refuerzo = Part.makeBox(P['SM_L'], 40, P['SM_H'])
+    refuerzo.translate(App.Vector(-P['SM_L']/2, side*(P['SM_W']/2 + 20), -P['SM_H']/2))
+    add_shape(doc, refuerzo, f"Refuerzo_lateral_{'izq' if side>0 else 'der'}", color_rgb(200,200,0), 0, estructura)
+
+# Refuerzo inferior
+base = Part.makeBox(P['SM_L'], P['SM_W'], 50)
+base.translate(App.Vector(-P['SM_L']/2, -P['SM_W']/2, -P['SM_H']/2 - 50))
+add_shape(doc, base, "Base_refuerzo", color_rgb(180,180,0), 0, estructura)
+
+# --- 2. MODULOS PAYLOAD ---
+modulos = new_part(doc, "2_MODULOS", root)
+
+# Payload esférico
+PM = Part.makeSphere(P['PM_D']/2)
+PM.translate(App.Vector(P['SM_L']/2 + P['PM_D']/2 + 50, 0, 0))
+add_shape(doc, PM, "Payload_Module", color_rgb(160,160,255), 0, modulos)
+
+# Mástil óptico
+mastil = Part.makeCylinder(P['Mast_D']/2, P['Mast_L'])
+mastil.translate(App.Vector(P['SM_L']/2 + 100, 0, P['SM_H']/2))
+add_shape(doc, mastil, "Mastil_optico", color_rgb(100,100,100), 0, modulos)
+
+# Sensor óptico
+sensor = Part.makeCylinder(P['Sensor_D']/2, P['Sensor_L'])
+sensor.translate(App.Vector(P['SM_L']/2 + 100, 0, P['SM_H']/2 + P['Mast_L']))
+add_shape(doc, sensor, "Sensor_optico", color_rgb(200,100,100), 0, modulos)
+
+# Star trackers
+for angle in (45, -45):
+    star = Part.makeCylinder(P['Star_D']/2, P['Star_L'])
+    star.rotate(App.Vector(0,0,0), App.Vector(0,1,0), angle)
+    star.translate(App.Vector(0, 0, P['SM_H']/2 + 100))
+    add_shape(doc, star, f"Star_tracker_{angle}", color_rgb(100,200,255), 0, modulos)
+
+# --- 3. ENERGÍA ---
+energia = new_part(doc, "3_ENERGIA", root)
+for side in (-1, 1):
+    brazo = Part.makeCylinder(P['Arm_D']/2, P['Arm_L'])
+    brazo.rotate(App.Vector(0,0,0), App.Vector(1,0,0), 90)
+    brazo.translate(App.Vector(0, side*(P['SM_W']/2 + P['Arm_L']/2), 0))
+    add_shape(doc, brazo, f"Brazo_solar_{'izq' if side>0 else 'der'}", color_rgb(150,150,150), 0, energia)
+
+    panel = Part.makeBox(P['Panel_L'], P['Panel_t'], P['Panel_W'])
+    panel.translate(App.Vector(-P['Panel_L']/2, side*(P['SM_W']/2 + P['Arm_L'] + P['Panel_t']/2), -P['Panel_W']/2))
+    add_shape(doc, panel, f"Panel_solar_{'izq' if side>0 else 'der'}", color_rgb(40,80,200), 20, energia)
+
+# --- 4. COMUNICACIONES ---
+comms = new_part(doc, "4_COMUNICACIONES", root)
+hga_sphere = Part.makeSphere(P['HGA_D']/2)
+cut_plane = Part.makeBox(P['HGA_D'], P['HGA_D'], P['HGA_D'])
+cut_plane.translate(App.Vector(-P['HGA_D']/2, -P['HGA_D']/2, -P['HGA_depth']))
+dish = hga_sphere.cut(cut_plane)
+dish.translate(App.Vector(P['SM_L']/2 + 200, -200, 100))
+add_shape(doc, dish, "Antena_HGA", color_rgb(220,220,255), 0, comms)
+
+# --- 5. PROPULSIÓN ---
+propulsion = new_part(doc, "5_PROPULSION", root)
+for side in (-1, 1):
+    tank = Part.makeCylinder(P['Tank_D']/2, P['Tank_L'])
+    tank.rotate(App.Vector(0,0,0), App.Vector(0,1,0), 90)
+    tank.translate(App.Vector(0, side*200, -P['SM_H']/2 - P['Tank_D']/2 - 40))
+    add_shape(doc, tank, f"Tanque_{'A' if side>0 else 'B'}", color_rgb(180,200,200), 0, propulsion)
+
+for pos in (-200, 200):
+    motor = Part.makeCylinder(P['Main_D']/2, P['Main_L'])
+    motor.translate(App.Vector(pos, 0, -P['SM_H']/2 - P['Main_L']))
+    add_shape(doc, motor, f"Motor_principal_{pos}", color_rgb(120,120,140), 0, propulsion)
+
+# --- Finalizar ---
+doc.recompute()
+print("SATELITE_RESISTENTE creado con estructura reforzada y jerarquía técnica.")

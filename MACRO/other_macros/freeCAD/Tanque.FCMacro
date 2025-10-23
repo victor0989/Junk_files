@@ -1,0 +1,214 @@
+# Macro FreeCAD: Tanque criogénico presurizado modular (cápsula + jacket + PMD + puertos)
+# Autor: Víctor + Copilot
+# Requisitos: FreeCAD 0.20+ (módulo Part)
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, math, json
+
+doc = App.newDocument("Tanque_Criogenico_Modular")
+
+# -------------------------
+# Parámetros principales
+# -------------------------
+p = {
+    "nombre": "Tank_CRYO_M1",
+    # Geometría principal
+    "r_inner": 0.50,            # Radio interior (m) del volumen de fluido
+    "L_total": 2.20,            # Longitud total aproximada del liner (m)
+    # Capas
+    "t_liner": 0.008,           # Espesor del liner (m)
+    "gap_vac": 0.040,           # Entrehierro de vacío + MLI (m)
+    "t_jacket": 0.006,          # Espesor del jacket (m)
+    # Puertos
+    "port_radius": 0.035,       # Radio de puertos principales (m)
+    "port_length": 0.25,        # Longitud de puertos (m)
+    # Soportes térmicos
+    "standoff_count": 6,
+    "standoff_radius": 0.006,   # Radio de cada montante (m)
+    "standoff_gap": 0.010,      # Penetración/holgura en cada lado (m)
+    # PMD (aletas)
+    "pmd_thickness": 0.004,
+    "pmd_span": 0.85,           # Fracción del radio interior (0-1)
+    # Aro de acople
+    "ring_width": 0.06,
+    "ring_thickness": 0.010,
+    # Estimaciones mecánicas
+    "P_design_bar": 3.0,        # Presión de diseño (bar)
+    "sigma_allow_MPa": 240.0,   # Tensión admisible (MPa), ajusta por material
+    "SF": 1.5                   # Factor de seguridad
+}
+
+# -------------------------
+# Utilidades geométricas
+# -------------------------
+def make_capsule(radius, L_total):
+    # Longitud cilíndrica (no negativa)
+    Lc = max(L_total - 2.0*radius, 1e-6)
+    z0 = -Lc/2.0
+    # Cilindro central
+    cyl = Part.makeCylinder(radius, Lc, App.Vector(0,0,z0), App.Vector(0,0,1))
+    # Esferas en los extremos (fusionadas)
+    s1 = Part.makeSphere(radius, App.Vector(0,0,z0))
+    s2 = Part.makeSphere(radius, App.Vector(0,0,z0+Lc))
+    return (cyl.fuse(s1)).fuse(s2)
+
+def add_colored(obj, name, r,g,b, alpha=0.0):
+    obj.Label = name
+    v = obj.ViewObject
+    v.ShapeColor = (r,g,b)
+    v.Transparency = int(alpha*100)
+
+# -------------------------
+# Construcción de capas
+# -------------------------
+r_i = p["r_inner"]
+L   = p["L_total"]
+
+# Liner (sólido hueco)
+outer_liner = make_capsule(r_i + p["t_liner"], L + 2*p["t_liner"])
+inner_fluid = make_capsule(r_i, L)
+liner_solid = outer_liner.cut(inner_fluid)
+
+# Gap de vacío (sólo para visualización/medición)
+gap_outer = make_capsule(r_i + p["t_liner"] + p["gap_vac"], L + 2*(p["t_liner"] + p["gap_vac"]))
+gap_inner = outer_liner
+gap_shell = gap_outer.cut(gap_inner)
+
+# Jacket (sólido hueco)
+jacket_outer = make_capsule(r_i + p["t_liner"] + p["gap_vac"] + p["t_jacket"],
+                            L + 2*(p["t_liner"] + p["gap_vac"] + p["t_jacket"]))
+jacket_inner = gap_outer
+jacket_solid = jacket_outer.cut(jacket_inner)
+
+# Objetos en documento
+obj_liner  = doc.addObject("Part::Feature","Liner")
+obj_liner.Shape = liner_solid
+add_colored(obj_liner, "Liner", 0.70,0.85,1.0, 0.20)
+
+obj_gap    = doc.addObject("Part::Feature","VacuumGap_MLI")
+obj_gap.Shape = gap_shell
+add_colored(obj_gap, "VacuumGap_MLI", 1.0,1.0,0.6, 0.85)
+
+obj_jacket = doc.addObject("Part::Feature","Jacket")
+obj_jacket.Shape = jacket_solid
+add_colored(obj_jacket, "Jacket", 0.80,0.80,0.80, 0.00)
+
+# -------------------------
+# PMD (4 aletas radiales internas)
+# -------------------------
+pmd_span = p["pmd_span"]*r_i
+pmd_t    = p["pmd_thickness"]
+pmd_h    = min(L*0.6, 0.9*L)
+pmd_z0   = -pmd_h/2.0
+
+def make_pmd_vane(angle_deg):
+    box = Part.makeBox(2*pmd_span, pmd_t, pmd_h, App.Vector(-pmd_span, -pmd_t/2.0, pmd_z0))
+    rot = App.Rotation(App.Vector(0,0,1), angle_deg)
+    return box.rotate(App.Vector(0,0,0), App.Vector(0,0,1), angle_deg)
+
+pmd = make_pmd_vane(0).fuse(make_pmd_vane(90)).fuse(make_pmd_vane(45)).fuse(make_pmd_vane(135))
+# Limitar PMD al volumen interior
+pmd = pmd.common(inner_fluid)
+obj_pmd = doc.addObject("Part::Feature","PMD_Vanes")
+obj_pmd.Shape = pmd
+add_colored(obj_pmd, "PMD_Vanes", 0.95,0.65,0.30, 0.20)
+
+# -------------------------
+# Soportes térmicos (standoffs)
+# -------------------------
+r_liner_outer = r_i + p["t_liner"]
+r_jacket_inner = r_i + p["t_liner"] + p["gap_vac"]
+ring_radius = (r_liner_outer + r_jacket_inner)/2.0
+z_standoff = 0.0
+standoff_len = (r_jacket_inner - r_liner_outer) + 2*p["standoff_gap"]
+
+standoffs = []
+for k in range(p["standoff_count"]):
+    ang = 360.0 * k / p["standoff_count"]
+    x = ring_radius * math.cos(math.radians(ang))
+    y = ring_radius * math.sin(math.radians(ang))
+    cyl = Part.makeCylinder(p["standoff_radius"], standoff_len,
+                            App.Vector(x, y, z_standoff - standoff_len/2.0),
+                            App.Vector(-x, -y, 0).normalize())  # radial
+    standoffs.append(cyl)
+
+st_agg = standoffs[0]
+for c in standoffs[1:]:
+    st_agg = st_agg.fuse(c)
+
+obj_st = doc.addObject("Part::Feature","Standoffs")
+obj_st.Shape = st_agg
+add_colored(obj_st, "Standoffs", 0.60,0.60,0.90, 0.10)
+
+# -------------------------
+# Puertos (llenado/vent, feed/return) y aro de acople
+# -------------------------
+Rport = p["port_radius"]; Lport = p["port_length"]
+
+# Puerto superior (llenado/vent) en domo frontal
+port_top = Part.makeCylinder(Rport, Lport, App.Vector(0, r_jacket_inner, 0), App.Vector(0,1,0))
+# Puerto lateral (feed) a 45°
+a = 45.0
+vx = math.cos(math.radians(a)); vz = math.sin(math.radians(a))
+port_side = Part.makeCylinder(Rport, Lport, App.Vector(r_jacket_inner*vx, 0, r_jacket_inner*vz),
+                              App.Vector(vx,0,vz))
+
+# Puerto retorno (opuesto al feed)
+port_ret = Part.makeCylinder(Rport, Lport, App.Vector(-r_jacket_inner*vx, 0, r_jacket_inner*vz),
+                             App.Vector(-vx,0,vz))
+
+ports = port_top.fuse(port_side).fuse(port_ret)
+
+obj_ports = doc.addObject("Part::Feature","Ports")
+obj_ports.Shape = ports
+add_colored(obj_ports, "Ports", 0.75,0.75,0.75, 0.00)
+
+# Aro de acople
+ring_outer_r = r_jacket_inner + p["ring_width"]
+ring_inner_r = ring_outer_r - p["ring_thickness"]
+ring_h = p["ring_thickness"]*1.2
+ring_z0 = 0.0 - ring_h/2.0
+ring_tube = Part.makeCylinder(ring_outer_r, ring_h, App.Vector(0,0,ring_z0))
+ring_hole = Part.makeCylinder(ring_inner_r, ring_h, App.Vector(0,0,ring_z0))
+ring = ring_tube.cut(ring_hole)
+obj_ring = doc.addObject("Part::Feature","CouplingRing")
+obj_ring.Shape = ring
+add_colored(obj_ring, "CouplingRing", 0.65,0.65,0.65, 0.00)
+
+# -------------------------
+# Metadatos y chequeos
+# -------------------------
+# Estimación de espesor por presión (muro delgado)
+P = p["P_design_bar"]*1e5                   # Pa
+r = r_i                                     # m
+sigma_allow = p["sigma_allow_MPa"]*1e6      # Pa
+t_est = (P*r) / (sigma_allow / p["SF"])
+
+meta = {
+    "nombre": p["nombre"],
+    "dimensiones": {
+        "r_inner": r_i, "L_total": L,
+        "t_liner": p["t_liner"], "gap_vac": p["gap_vac"], "t_jacket": p["t_jacket"]
+    },
+    "puertos": {"radius": Rport, "length": Lport, "count": 3},
+    "soportes": {"count": p["standoff_count"], "radius": p["standoff_radius"]},
+    "pmd": {"thickness": p["pmd_thickness"], "span_fraction": p["pmd_span"]},
+    "espesor_muro_delgado_estimado_m": t_est,
+    "volumenes_m3": {
+        "liner_solid": obj_liner.Shape.Volume*1e-9,
+        "gap_shell": obj_gap.Shape.Volume*1e-9,
+        "jacket_solid": obj_jacket.Shape.Volume*1e-9
+    }
+}
+
+obj_meta = doc.addObject("App::DocumentObjectGroupPython","Meta")
+obj_meta.Label = "META_JSON (ver consola)"
+print("META_JSON:", json.dumps(meta, indent=2))
+
+doc.recompute()
+Gui.activeView().viewAxonometric()
+Gui.SendMsgToActiveView("ViewFit")
+
+# Exportar STEP (descomenta y ajusta ruta):
+# objs = [obj_liner, obj_gap, obj_jacket, obj_st, obj_pmd, obj_ports, obj_ring]
+# ImportGui.export(objs, "/ruta/a/Tanque_Criogenico_Modular.step")

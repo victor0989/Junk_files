@@ -1,0 +1,404 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, math
+
+doc = App.newDocument("ISS_Battery")
+
+# ----------------------------
+# Parámetros (mm)
+# ----------------------------
+p = dict(
+    # Caja
+    L=460.0, W=340.0, H=320.0,
+    t_wall=2.5,
+    # Tapas y bridas
+    t_top=5.0, t_bottom=5.0,
+    flange_w=15.0, flange_t=5.0,   # ancho y espesor de brida perimetral en cuerpo
+    fastener_d_M6=6.0, fastener_pitch=60.0, fastener_margin=18.0,
+    # Refuerzos verticales
+    stiff_w=8.0, stiff_t=3.0, stiff_pitch=70.0, stiff_edge_margin=20.0,
+    # Tapa de registro
+    reg_w=200.0, reg_h=140.0, reg_t=3.0,
+    gasket_t=2.0, gasket_groove_w=2.5, gasket_groove_d=2.2, reg_margin=14.0,
+    # Conector principal
+    conn_OD=38.0, conn_neck=25.0, conn_stub=18.0, conn_branch=30.0, conn_offset_z=-20.0,
+    make_elbow=True,  # simplificado (dos cilindros a 90°)
+    # Bornes superiores
+    stud_base=30.0, stud_h=10.0, stud_hole_M8=8.0, stud_edge_offset=35.0,
+    # Orejetas inferiores
+    lug_w=40.0, lug_l=20.0, lug_t=6.0, lug_hole=8.5, lug_offset=25.0,
+    # Densidades
+    rho_6061=2700.0, rho_5052=2680.0
+)
+
+def add(name, shape):
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = shape
+    return o
+
+def rect_hole_pattern(rect_w, rect_h, pitch, margin):
+    pts = []
+    iw, ih = rect_w - 2*margin, rect_h - 2*margin
+    def spaced(length, pitch):
+        n = max(2, int(round(length / pitch)) + 1)
+        step = length / (n-1)
+        return [i*step for i in range(n)]
+    xs, ys = spaced(iw, pitch), spaced(ih, pitch)
+    x0, y0 = margin, margin
+    # perímetro (cerrado sin duplicar esquinas)
+    for x in xs: pts.append(App.Vector(x0 + x, y0 + 0, 0))
+    for y in ys[1:]: pts.append(App.Vector(x0 + iw, y0 + y, 0))
+    for x in reversed(xs[0:-1]): pts.append(App.Vector(x0 + x, y0 + ih, 0))
+    for y in reversed(ys[1:-1]): pts.append(App.Vector(x0 + 0, y0 + y, 0))
+    return pts
+
+# ----------------------------
+# Cuerpo hueco
+# ----------------------------
+outer = Part.makeBox(p['L'], p['W'], p['H'])
+inner = Part.makeBox(p['L'] - 2*p['t_wall'], p['W'] - 2*p['t_wall'], p['H'] - 2*p['t_wall'])
+inner.translate(App.Vector(p['t_wall'], p['t_wall'], p['t_wall']))
+shell = outer.cut(inner)
+body = add("BodyShell", shell)
+
+# Abrimos arriba y abajo al ras de pared (para tapas)
+cut_top = Part.makeBox(p['L'], p['W'], p['t_wall']); cut_top.translate(App.Vector(0,0,p['H']-p['t_wall']))
+cut_bot = Part.makeBox(p['L'], p['W'], p['t_wall']); cut_bot.translate(App.Vector(0,0,0))
+shell = shell.cut(cut_top).cut(cut_bot)
+body.Shape = shell
+
+# ----------------------------
+# Bridas perimetrales en el cuerpo (top/bottom)
+# ----------------------------
+def make_flange(z0, name):
+    ow, ol = p['W'] + 2*p['flange_w'], p['L'] + 2*p['flange_w']
+    # Marco rectangular: caja grande - caja interior
+    big = Part.makeBox(ol, ow, p['flange_t'])
+    big.translate(App.Vector(-p['flange_w'], -p['flange_w'], z0))
+    small = Part.makeBox(p['L'], p['W'], p['flange_t'])
+    small.translate(App.Vector(0,0,z0))
+    frame = big.cut(small)
+    return add(name, frame)
+
+top_flange = make_flange(p['H'], "TopFlange")
+bot_flange = make_flange(-p['flange_t'], "BottomFlange")
+body.Shape = body.Shape.fuse(top_flange.Shape).fuse(bot_flange.Shape)
+
+# ----------------------------
+# Refuerzos verticales externos
+# ----------------------------
+stiff_objs = []
+def place_stiff(axis, face_pos, span_len, off):
+    pitch, w, t = p['stiff_pitch'], p['stiff_w'], p['stiff_t']
+    usable = max(0.0, span_len - 2*off)
+    n = max(1, int(round(usable / pitch)) + 1)
+    step = usable / (n-1) if n>1 else 0
+    for i in range(n):
+        s = off + i*step
+        if axis=='X':  # caras YZ
+            bx = p['t_wall'] - t if face_pos==0 else p['L'] - p['t_wall']
+            b = Part.makeBox(t, w, p['H'])
+            b.translate(App.Vector(bx, s, 0))
+        else:          # axis=='Y', caras XZ
+            by = p['t_wall'] - t if face_pos==0 else p['W'] - p['t_wall']
+            b = Part.makeBox(w, t, p['H'])
+            b.translate(App.Vector(s, by, 0))
+        stiff_objs.append(add(f"Stiff_{axis}{face_pos}_{i}", b))
+
+place_stiff('X', 0, p['W'], p['stiff_edge_margin'])
+place_stiff('X', p['L'], p['W'], p['stiff_edge_margin'])
+place_stiff('Y', 0, p['L'], p['stiff_edge_margin'])
+place_stiff('Y', p['W'], p['L'], p['stiff_edge_margin'])
+
+fused = body.Shape
+for s in stiff_objs: fused = fused.fuse(s.Shape)
+body.Shape = fused
+
+# ----------------------------
+# Tapas (placas) y taladros M6 coincidentes con bridas
+# ----------------------------
+def make_cover(z0, name):
+    plate = Part.makeBox(p['L']+2*p['flange_w'], p['W']+2*p['flange_w'], p['t_top'] if name=="TopCover" else p['t_bottom'])
+    plate.translate(App.Vector(-p['flange_w'], -p['flange_w'], z0))
+    # Taladros perimetrales
+    holes_xy = rect_hole_pattern(p['L']+2*p['flange_w'], p['W']+2*p['flange_w'], p['fastener_pitch'], p['fastener_margin'])
+    for pt in holes_xy:
+        h = Part.makeCylinder(p['fastener_d_M6']/2.0, 50.0, App.Vector(-p['flange_w']+pt.x, -p['flange_w']+pt.y, z0-25.0), App.Vector(0,0,1))
+        plate = plate.cut(h)
+    return add(name, plate), holes_xy
+
+top_cover, top_holes = make_cover(p['H']+p['t_top'], "TopCover")
+bot_cover, bot_holes = make_cover(-p['flange_t']-p['t_bottom'], "BottomCover")
+
+# Taladros coincidentes en bridas del cuerpo
+def cut_flange_holes(z0, holes_xy, label):
+    flg = Part.makeBox(p['L']+2*p['flange_w'], p['W']+2*p['flange_w'], p['flange_t'])
+    flg.translate(App.Vector(-p['flange_w'], -p['flange_w'], z0))
+    for pt in holes_xy:
+        h = Part.makeCylinder(p['fastener_d_M6']/2.0, 2*p['flange_t']+2.0,
+                              App.Vector(-p['flange_w']+pt.x, -p['flange_w']+pt.y, z0-1.0), App.Vector(0,0,1))
+        flg = flg.cut(h)
+    return flg
+
+body.Shape = body.Shape.cut(cut_flange_holes(p['H'], top_holes, "TopFlangeHoles"))
+body.Shape = body.Shape.cut(cut_flange_holes(-p['flange_t'], bot_holes, "BotFlangeHoles"))
+
+# ----------------------------
+# Tapa de registro lateral, junta y taladros
+# ----------------------------
+reg_x0 = (p['L'] - p['reg_w'])/2.0
+reg_z0 = (p['H'] - p['reg_h'])/2.0
+# Apertura en pared Y=0
+reg_open = Part.makeBox(p['reg_w'], p['t_wall']+0.4, p['reg_h'])
+reg_open.translate(App.Vector(reg_x0, -0.2, reg_z0))
+body.Shape = body.Shape.cut(reg_open)
+
+# Reborde perimetral (marco) en el cuerpo para atornillar y alojar junta
+frame_w = p['reg_w'] + 2*p['reg_margin']
+frame_h = p['reg_h'] + 2*p['reg_margin']
+frame = Part.makeBox(frame_w, p['flange_t'], frame_h)
+frame.translate(App.Vector(reg_x0 - p['reg_margin'], -p['flange_t'], reg_z0 - p['reg_margin']))
+# Hueco interior del marco (para que sólo quede anillo)
+frame_inner = Part.makeBox(p['reg_w'], p['flange_t'], p['reg_h'])
+frame_inner.translate(App.Vector(reg_x0, -p['flange_t'], reg_z0))
+frame = frame.cut(frame_inner)
+body.Shape = body.Shape.fuse(frame)
+
+# Canal de junta en el cuerpo
+groove = Part.makeBox(p['reg_w'] + 2*p['gasket_groove_w'], p['gasket_groove_d'], p['reg_h'] + 2*p['gasket_groove_w'])
+groove.translate(App.Vector(reg_x0 - p['gasket_groove_w'], -p['gasket_groove_d'], reg_z0 - p['gasket_groove_w']))
+body.Shape = body.Shape.cut(groove)
+
+# Taladros M6 en el marco y en la tapa
+reg_holes = rect_hole_pattern(frame_w, frame_h, p['fastener_pitch'], p['fastener_margin'])
+for pt in reg_holes:
+    h = Part.makeCylinder(p['fastener_d_M6']/2.0, 2*p['flange_t']+p['reg_t']+2.0,
+                          App.Vector(reg_x0 - p['reg_margin'] + pt.x, -p['flange_t']-1.0, reg_z0 - p['reg_margin'] + pt.y),
+                          App.Vector(0,1,0))
+    body.Shape = body.Shape.cut(h)
+
+reg_plate = Part.makeBox(frame_w, p['reg_t'], frame_h)
+reg_plate.translate(App.Vector(reg_x0 - p['reg_margin'], -p['flange_t']-p['reg_t'], reg_z0 - p['reg_margin']))
+for pt in reg_holes:
+    h = Part.makeCylinder(p['fastener_d_M6']/2.0, p['reg_t']+2.0,
+                          App.Vector(reg_x0 - p['reg_margin'] + pt.x, -p['flange_t']-p['reg_t']-1.0, reg_z0 - p['reg_margin'] + pt.y),
+                          App.Vector(0,1,0))
+    reg_plate = reg_plate.cut(h)
+reg_obj = add("ServiceDoor", reg_plate)
+
+# ----------------------------
+# Conector principal acodado (simplificado)
+# ----------------------------
+cx = p['L'] - p['t_wall']
+cy = p['W']/2.0
+cz = p['H']/2.0 + p['conn_offset_z']
+# Casquillo exterior en X
+sleeve = Part.makeCylinder(p['conn_OD']/2.0, p['conn_stub'], App.Vector(cx, cy, cz), App.Vector(1,0,0))
+# Paso interior Ø25 atraviesa pared y casquillo
+pass_x = Part.makeCylinder(p['conn_neck']/2.0, p['conn_stub'] + 2*p['t_wall'],
+                           App.Vector(cx - 2*p['t_wall'], cy, cz), App.Vector(1,0,0))
+sleeve = sleeve.cut(pass_x)
+# Abertura en la pared
+wall_hole = Part.makeCylinder(p['conn_neck']/2.0, 3*p['t_wall'],
+                              App.Vector(cx - 3*p['t_wall'], cy, cz), App.Vector(1,0,0))
+body.Shape = body.Shape.cut(wall_hole)
+
+# Rama acodada (opcional simple: cilindro en Y positivo)
+if p['make_elbow']:
+    branch = Part.makeCylinder(p['conn_OD']/2.0, p['conn_branch'],
+                               App.Vector(cx + p['conn_stub'], cy, cz), App.Vector(0,1,0))
+    branch = branch.cut(Part.makeCylinder(p['conn_neck']/2.0, p['conn_branch']+2.0,
+                                          App.Vector(cx + p['conn_stub'], cy-1.0, cz), App.Vector(0,1,0)))
+    conn = sleeve.fuse(branch)
+else:
+    conn = sleeve
+add("MainConnector", conn)
+
+# ----------------------------
+# Bornes superiores (4 bases con M8)
+# ----------------------------
+studs = []
+offs = p['stud_edge_offset']
+for sx in [offs, p['L']-offs- p['stud_base']]:
+    for sy in [offs, p['W']-offs- p['stud_base']]:
+        base = Part.makeBox(p['stud_base'], p['stud_base'], p['stud_h'])
+        base.translate(App.Vector(sx, sy, p['H']+p['t_top']))
+        hole = Part.makeCylinder(p['stud_hole_M8']/2.0, p['stud_h']+20.0,
+                                 App.Vector(sx + p['stud_base']/2.0, sy + p['stud_base']/2.0, p['H']+p['t_top']-10.0),
+                                 App.Vector(0,0,1))
+        studs.append(add(f"Stud_{sx:.0f}_{sy:.0f}", base.cut(hole)))
+
+# ----------------------------
+# Orejetas inferiores (4) para fijación
+# ----------------------------
+lugs = []
+for sx in [p['lug_offset'], p['L']-p['lug_offset']-p['lug_w']]:
+    for sy in [p['lug_offset'], p['W']-p['lug_offset']-p['lug_l']]:
+        lug = Part.makeBox(p['lug_w'], p['lug_l'], p['lug_t'])
+        lug.translate(App.Vector(sx, sy, -p['lug_t']-p['t_bottom']))
+        hole = Part.makeCylinder(p['lug_hole']/2.0, p['lug_t']+3.0,
+                                 App.Vector(sx + p['lug_w']/2.0, sy + p['lug_l']/2.0, -p['t_bottom']-1.5),
+                                 App.Vector(0,0,1))
+        lugs.append(add(f"Lug_{sx:.0f}_{sy:.0f}", lug.cut(hole)))
+        
+# --- Añadir nuevos parámetros (agrega/ajusta en p) ---
+p.update(dict(
+    # Celdas y BMS
+    rail_t=3.0, rail_h=15.0, rail_inset=15.0, ribs_n=3,
+    bms_standoff_d=8.0, bms_standoff_h=12.0, bms_hole=3.2,
+    bms_grid_w=120.0, bms_grid_h=80.0, bms_margin=40.0,
+    # Cableado
+    race_w=12.0, race_h=12.0, race_slot_l=6.0, race_slot_w=3.0, race_slot_pitch=80.0,
+    m4_boss_d=8.0, m4_boss_h=8.0, m4_hole=4.2,
+    # Conectores adicionales
+    aux_OD=32.0, aux_neck=20.0, aux_len=20.0, aux_offset_z=25.0,
+    microD_plate_w=22.0, microD_plate_h=10.0, microD_plate_t=5.0,
+    microD_slot_w=16.0, microD_slot_h=5.0, microD_bolt=2.0,
+    strain_L=40.0, strain_W=20.0, strain_t=3.0, strain_slot_L=12.0, strain_slot_W=4.0,
+    # Venteo
+    vent_OD=16.0, vent_h=8.0, vent_hole=10.0
+))
+
+# --- 1) Rieles y costillas internas para celdas ---
+# Rieles longitudinales en el fondo, separados de las paredes
+for i, x0 in enumerate([p['rail_inset'], p['L'] - p['rail_inset'] - p['rail_t']]):
+    rail = Part.makeBox(p['rail_t'], p['W'] - 2*p['rail_inset'], p['rail_h'])
+    rail.translate(App.Vector(x0, p['rail_inset'], p['t_bottom']))  # dentro del cascarón
+    body.Shape = body.Shape.fuse(rail)
+
+# Costillas transversales (repartidas)
+span = p['W'] - 2*p['rail_inset']
+step = span/(p['ribs_n']+1)
+for i in range(p['ribs_n']):
+    y = p['rail_inset'] + (i+1)*step
+    rib = Part.makeBox(p['L'] - 2*p['rail_inset'], p['rail_t'], p['rail_h'])
+    rib.translate(App.Vector(p['rail_inset'], y, p['t_bottom']))
+    body.Shape = body.Shape.fuse(rib)
+
+# --- 2) Postes para PCB BMS (pilares con agujero M3) ---
+# Colocar patrón 2x3 sobre el techo interior, zona centrada
+gx, gy = p['bms_grid_w'], p['bms_grid_h']
+x0 = (p['L'] - gx)/2.0
+y0 = (p['W'] - gy)/2.0
+for ix in [0, 1, 2]:
+    for iy in [0, 1]:
+        x = x0 + ix * (gx/2.0)
+        y = y0 + iy * gy
+        st = Part.makeCylinder(p['bms_standoff_d']/2.0, p['bms_standoff_h'],
+                               App.Vector(x, y, p['H'] - p['t_top'] - p['bms_standoff_h']), App.Vector(0,0,1))
+        hole = Part.makeCylinder(p['bms_hole']/2.0, p['bms_standoff_h']+2.0,
+                                 App.Vector(x, y, p['H'] - p['t_top'] - p['bms_standoff_h']-1.0), App.Vector(0,0,1))
+        body.Shape = body.Shape.fuse(st).cut(hole)
+
+# --- 3) Canaleta de cables interna con ranuras para bridas ---
+race = Part.makeBox(p['L'] - 2*p['rail_inset'], p['race_w'], p['race_h'])
+race.translate(App.Vector(p['rail_inset'], p['rail_inset'], p['H'] - p['t_top'] - p['race_h'] - 10.0))
+# Ranuras cada pitch a lo largo
+nslots = int((p['L'] - 2*p['rail_inset']) / p['race_slot_pitch']) + 1
+for i in range(nslots):
+    sx = p['rail_inset'] + i * p['race_slot_pitch'] + 0.5*(p['race_slot_pitch'] - p['race_slot_l'])
+    slot = Part.makeBox(p['race_slot_l'], p['race_slot_w'], p['race_h']+2.0)
+    slot.translate(App.Vector(sx, p['rail_inset'] + (p['race_w'] - p['race_slot_w'])/2.0, p['H'] - p['t_top'] - p['race_h'] - 11.0))
+    race = race.cut(slot)
+body.Shape = body.Shape.fuse(race)
+
+# Bosses M4 en pared opuesta para abrazaderas
+for x in [p['rail_inset'] + 30.0, p['L']/2.0, p['L'] - p['rail_inset'] - 30.0]:
+    for z in [p['t_bottom'] + 40.0, p['H']/2.0, p['H'] - p['t_top'] - 40.0]:
+        boss = Part.makeCylinder(p['m4_boss_d']/2.0, p['m4_boss_h'],
+                                 App.Vector(x, p['W'] - p['t_wall'] - p['m4_boss_h'], z), App.Vector(0, -1, 0))
+        hole = Part.makeCylinder(p['m4_hole']/2.0, p['m4_boss_h'] + p['t_wall'] + 2.0,
+                                 App.Vector(x, p['W'] - p['t_wall'] - p['m4_boss_h'] - 1.0, z), App.Vector(0, -1, 0))
+        body.Shape = body.Shape.fuse(boss).cut(hole)
+
+# --- 4) Conector circular de potencia auxiliar (cara X=0) ---
+aux = Part.makeCylinder(p['aux_OD']/2.0, p['aux_len'],
+                        App.Vector(p['t_wall'], p['W']/2.0, p['H']/2.0 + p['aux_offset_z']), App.Vector(-1,0,0))
+aux_pass = Part.makeCylinder(p['aux_neck']/2.0, p['aux_len'] + 2*p['t_wall'],
+                             App.Vector(2*p['t_wall'], p['W']/2.0, p['H']/2.0 + p['aux_offset_z']), App.Vector(-1,0,0))
+aux = aux.cut(aux_pass)
+body.Shape = body.Shape.fuse(aux)
+# Hueco en pared
+aux_hole = Part.makeCylinder(p['aux_neck']/2.0, 3*p['t_wall'],
+                             App.Vector(3*p['t_wall'], p['W']/2.0, p['H']/2.0 + p['aux_offset_z']), App.Vector(-1,0,0))
+body.Shape = body.Shape.cut(aux_hole)
+
+# --- 5) Pasamuros micro-D (placa rectangular con hueco y 4 M2) en cara Y=W ---
+px = p['L']/2.0 - p['microD_plate_w']/2.0
+pz = p['H']/2.0 - p['microD_plate_h']/2.0
+plate = Part.makeBox(p['microD_plate_w'], p['microD_plate_t'], p['microD_plate_h'])
+plate.translate(App.Vector(px, p['W'] + p['microD_plate_t'], pz))
+# Hueco rectangular para conector
+slot = Part.makeBox(p['microD_slot_w'], p['microD_plate_t']+2.0, p['microD_slot_h'])
+slot.translate(App.Vector(px + (p['microD_plate_w']-p['microD_slot_w'])/2.0,
+                          p['W'] - 1.0, pz + (p['microD_plate_h']-p['microD_slot_h'])/2.0))
+plate = plate.cut(slot)
+# Taladros M2 en las esquinas de un rectángulo 18x6
+for (dx, dz) in [(-9,-3), (9,-3), (-9,3), (9,3)]:
+    h = Part.makeCylinder(p['microD_bolt']/2.0, p['microD_plate_t']+p['t_wall']+4.0,
+                          App.Vector(p['L']/2.0 + dx, p['W'] + p['microD_plate_t'] + 2.0, p['H']/2.0 + dz),
+                          App.Vector(0,-1,0))
+    plate = plate.cut(h)
+    body.Shape = body.Shape.cut(h)  # perfora pared
+body.Shape = body.Shape.fuse(plate)
+
+# --- 6) Escuadra de alivio de tensión (junto al conector principal) ---
+bx = p['L'] - 50.0
+by = p['W']/2.0 + 35.0
+bz = p['H']/2.0 - 20.0
+bracket = Part.makeBox(p['strain_L'], p['strain_t'], p['strain_W'])
+bracket.translate(App.Vector(bx, by, bz))
+# ranuras para bridas
+for i in [10.0, p['strain_L'] - 10.0 - p['strain_slot_L']]:
+    sl = Part.makeBox(p['strain_slot_L'], p['strain_t']+2.0, p['strain_slot_W'])
+    sl.translate(App.Vector(bx + i, by - 1.0, bz + (p['strain_W']-p['strain_slot_W'])/2.0))
+    bracket = bracket.cut(sl)
+body.Shape = body.Shape.fuse(bracket)
+
+# --- 7) Puerto de venteo en la tapa superior (cerca de esquina) ---
+vx = p['flange_w'] + 30.0
+vy = p['flange_w'] + 30.0
+vent_boss = Part.makeCylinder(p['vent_OD']/2.0, p['vent_h'],
+                              App.Vector(vx, vy, p['H'] + p['t_top']), App.Vector(0,0,1))
+vent_hole = Part.makeCylinder(p['vent_hole']/2.0, p['t_top']+p['vent_h']+2.0,
+                              App.Vector(vx, vy, p['H'] - 1.0), App.Vector(0,0,1))
+# Asumimos la tapa superior como objeto top_cover (ya creado); se perfora tapa y se fusiona boss
+top_cover.Shape = top_cover.Shape.cut(vent_hole)
+body.Shape = body.Shape.fuse(vent_boss)
+
+# --- 8) Pads térmicos en el fondo ---
+pad_size = 30.0
+for (x, y) in [(60.0, 60.0), (p['L']-60.0-pad_size, 60.0),
+               (60.0, p['W']-60.0-pad_size), (p['L']-60.0-pad_size, p['W']-60.0-pad_size)]:
+    pad = Part.makeBox(pad_size, pad_size, 2.0)
+    pad.translate(App.Vector(x, y, p['t_bottom']))
+    body.Shape = body.Shape.fuse(pad)
+
+doc.recompute()
+
+
+# ----------------------------
+# Cálculo de masa estimada
+# ----------------------------
+def vol_m3(shape): return shape.Volume / 1e9
+
+vol_shell = vol_m3(body.Shape)
+vol_top = vol_m3(top_flange.Shape) + vol_m3(bot_flange.Shape)
+vol_covers = vol_m3(top_cover.Shape) + vol_m3(bot_cover.Shape)
+vol_reg = vol_m3(reg_obj.Shape)
+vol_studs = sum(vol_m3(o.Shape) for o in studs)
+vol_lugs = sum(vol_m3(o.Shape) for o in lugs)
+vol_conn = vol_m3(conn)
+vol_6061 = vol_shell + vol_top + vol_covers + vol_studs + vol_lugs + vol_conn
+vol_5052 = vol_reg
+mass = vol_6061 * p['rho_6061'] + vol_5052 * p['rho_5052']
+
+App.Console.PrintMessage(f"Volumen 6061 (m^3): {vol_6061:.6f}\n")
+App.Console.PrintMessage(f"Volumen 5052 (m^3): {vol_5052:.6f}\n")
+App.Console.PrintMessage(f"Masa estimada (kg): {mass:.2f}\n")
+
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.fitAll()
+except Exception:
+    pass

@@ -1,0 +1,360 @@
+# -*- coding: utf-8 -*-
+# Capsule Plasma Water Collector – FreeCAD Macro
+# Cápsula alargada con admisión estrecha-profunda, filtro plasma, thruster iónico central,
+# radiadores curvos, anillos/manifolds térmicos, tanques y bombas. Exporta STEP AP214.
+
+import math
+import FreeCAD as App
+import Part
+
+# ===================== Parámetros globales (mm) =====================
+# Cápsula (eje longitudinal = X)
+caps_rad      = 105.0     # radio externo del casco
+caps_cyl_len  = 340.0     # tramo cilíndrico central (más alargado)
+caps_shell_t  = 4.0       # grosor del casco (doble pared)
+rib_ring_t    = 2.0       # grosor de anillos estructurales internos
+n_ribs        = 5         # número de anillos internos
+
+# Admisión (Water collection)
+intake_d         = 120.0  # diámetro de boca (más estrecha)
+intake_depth     = 120.0  # profundidad de campana (más profunda)
+intake_wall_t    = 2.0
+intake_lip_r     = 2.0    # toro del labio
+cond_disc_t      = 2.5
+cond_disc_pitch  = 18.0
+cond_n_discs     = 5
+
+# Filtro de plasma (módulo en línea)
+filter_len     = 120.0
+filter_r_out   = 60.0
+filter_wall_t  = 3.0
+filter_pack_n  = 7
+filter_pack_t  = 3.5
+filter_pack_gap= 8.0
+
+# Ion thruster (cola -X)
+thruster_len          = 150.0
+thruster_body_r       = 60.0
+thruster_nozzle_d     = 170.0   # tobera central grande
+thruster_nozzle_depth = 110.0
+thruster_wall_t       = 2.2
+rcs_small_n           = 4       # toberas pequeñas auxiliares
+
+# Radiadores curvos (abrazando el casco)
+rad_angle_deg   = 90.0   # anchura angular de cada panel (sector)
+rad_gap_from_hull = 10.0 # separación respecto al casco
+rad_radial_t    = 6.0    # espesor radial del panel
+rad_len_x       = 260.0  # longitud del panel (a lo largo de X)
+rad_n_panels    = 2      # pares de paneles (en ±Y); 2 = 4 paneles (±Y y ±Z). Usa 1 para solo ±Y.
+
+# Sistema térmico/manifolds y tuberías
+manifold_r_tube   = 6.0
+manifold_front_x  =  +caps_cyl_len/2.0 - 10.0
+manifold_mid_x    =  0.0
+pipe_r            = 4.0
+
+# Tanques y bombas
+tank_r  = 36.0
+tank_len= 180.0
+pump_blk = (44.0, 28.0, 26.0)  # (X, Y, Z)
+
+# Exportación
+export_path = App.getUserAppDataDir() + "CapsuleCollector_Advanced.step"
+
+# ===================== Utilidades =====================
+def place_shape(shape, pos=App.Vector(0,0,0), rot_axis=App.Vector(0,1,0), rot_deg=0):
+    sh = shape.copy()
+    pl = App.Placement()
+    pl.Rotation = App.Rotation(rot_axis, rot_deg)
+    pl.Base = pos
+    sh.Placement = pl
+    return sh
+
+def add_part(doc, shape, name, color=(0.8,0.8,0.8), transparency=0):
+    if shape is None: return None
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    try:
+        obj.ViewObject.ShapeColor = color
+        obj.ViewObject.Transparency = int(max(0, min(100, round(transparency*100))))
+    except Exception:
+        pass
+    return obj
+
+def make_ring(r_outer, r_inner, h):
+    outer = Part.makeCylinder(r_outer, h)
+    inner = Part.makeCylinder(r_inner, h)
+    return outer.cut(inner)
+
+def make_revolved_solid_from_diameter(d, depth, steps=96, z0_eps_factor=1.0):
+    # Paraboloide macizo: r(z) = sqrt(4 f z), f = d^2 / (16*depth)
+    if d <= 0 or depth <= 0:
+        return None
+    f = (d*d) / (16.0*depth)
+    def r(z): return math.sqrt(max(0.0, 4.0*f*z))
+    steps = max(36, int(steps))
+    z0 = depth / (steps * z0_eps_factor)
+    p_axis_bot = App.Vector(0, 0, z0)
+    p_axis_top = App.Vector(0, 0, depth)
+    e_axis = Part.makeLine(p_axis_bot, p_axis_top)
+    p_top_out = App.Vector(r(depth), 0, depth)
+    e_top = Part.makeLine(p_axis_top, p_top_out)
+    outer_pts = []
+    for i in range(steps+1):
+        z = depth - (depth - z0) * (i/steps)
+        outer_pts.append(App.Vector(r(z), 0, z))
+    e_curve = Part.makePolygon(outer_pts)
+    p_bot_out = outer_pts[-1]
+    e_bot = Part.makeLine(p_bot_out, p_axis_bot)
+    wire = Part.Wire([e_axis, e_top, e_curve, e_bot])
+    face = Part.Face(wire)
+    return face.revolve(App.Vector(0,0,0), App.Vector(0,0,1), 360)
+
+def make_shell_from_revolve(d, depth, t, steps=96):
+    outer = make_revolved_solid_from_diameter(d, depth, steps)
+    d_inner = max(0.1, d - 2.0*t)
+    inner = make_revolved_solid_from_diameter(d_inner, depth, steps)
+    return outer.cut(inner)
+
+def make_annular_sector_face(R_out, R_in, theta_deg, nseg=48):
+    """
+    Cara en el plano YZ que representa un sector anular centrado en (0,0),
+    con apertura angular theta_deg alrededor de +Y (±theta/2 hacia ±Z).
+    """
+    theta = math.radians(theta_deg)
+    half = theta/2.0
+    # muestreamos el arco exterior y luego el interior en inverso
+    pts = []
+    for i in range(nseg+1):
+        ang = -half + (theta * i / nseg)
+        y = R_out*math.cos(ang)
+        z = R_out*math.sin(ang)
+        pts.append(App.Vector(0, y, z))
+    for i in range(nseg, -1, -1):
+        ang = -half + (theta * i / nseg)
+        y = R_in*math.cos(ang)
+        z = R_in*math.sin(ang)
+        pts.append(App.Vector(0, y, z))
+    wire = Part.Wire(Part.makePolygon(pts + [pts[0]]))
+    return Part.Face(wire)
+
+# ===================== Subconjuntos =====================
+def build_capsule_shell(doc):
+    """
+    Casco de doble pared (cilindro + hemisferios) y anillos estructurales internos.
+    """
+    objs = []
+    # Externo
+    cyl_out = Part.makeCylinder(caps_rad, caps_cyl_len, App.Vector(-caps_cyl_len/2.0,0,0), App.Vector(1,0,0))
+    s_front_out = Part.makeSphere(caps_rad); s_front_out.translate(App.Vector(+caps_cyl_len/2.0,0,0))
+    s_back_out  = Part.makeSphere(caps_rad); s_back_out.translate(App.Vector(-caps_cyl_len/2.0,0,0))
+    # Recortar hemisferios
+    box_front = Part.makeBox(caps_rad*2.2, caps_rad*2.2, caps_rad*2.2)
+    box_front.translate(App.Vector(+caps_cyl_len/2.0, -caps_rad*1.1, -caps_rad*1.1))
+    hemi_front_out = s_front_out.common(box_front)
+    box_back = Part.makeBox(caps_rad*2.2, caps_rad*2.2, caps_rad*2.2)
+    box_back.translate(App.Vector(-caps_cyl_len/2.0 - caps_rad*2.2, -caps_rad*1.1, -caps_rad*1.1))
+    hemi_back_out = s_back_out.common(box_back)
+    outer = cyl_out.fuse([hemi_front_out, hemi_back_out])
+
+    # Interno (para vaciar)
+    r_in = caps_rad - caps_shell_t
+    cyl_in = Part.makeCylinder(r_in, caps_cyl_len - 2*caps_shell_t,
+                               App.Vector(-caps_cyl_len/2.0 + caps_shell_t,0,0), App.Vector(1,0,0))
+    s_front_in = Part.makeSphere(r_in); s_front_in.translate(App.Vector(+caps_cyl_len/2.0 - caps_shell_t,0,0))
+    s_back_in  = Part.makeSphere(r_in); s_back_in.translate(App.Vector(-caps_cyl_len/2.0 + caps_shell_t,0,0))
+    hemi_front_in = s_front_in.common(box_front)
+    hemi_back_in  = s_back_in.common(box_back)
+    inner = cyl_in.fuse([hemi_front_in, hemi_back_in])
+
+    shell = outer.cut(inner)
+    objs.append(add_part(doc, shell, "CapsuleShell", color=(0.38,0.42,0.46), transparency=0))
+
+    # Anillos internos (ribs) como toros de pequeño radio
+    for i in range(n_ribs):
+        x = -caps_cyl_len/2.0 + (i+1)*(caps_cyl_len/(n_ribs+1))
+        tor = Part.makeTorus(r_in - 6.0, rib_ring_t)
+        tor = place_shape(tor, rot_axis=App.Vector(0,1,0), rot_deg=-90)  # eje mayor alrededor de X
+        tor.translate(App.Vector(x, 0, 0))
+        objs.append(add_part(doc, tor, f"Rib_{i}", color=(0.55,0.58,0.62), transparency=0))
+    return objs
+
+def build_intake(doc):
+    objs = []
+    nose_x = +caps_cyl_len/2.0
+
+    # Campana de admisión (paraboloidal hueca) orientada a +X
+    bell = make_shell_from_revolve(intake_d, intake_depth, intake_wall_t, steps=128)
+    bell = place_shape(bell, rot_axis=App.Vector(0,1,0), rot_deg=-90)
+    bell.translate(App.Vector(nose_x, 0, 0))
+    objs.append(add_part(doc, bell, "IntakeBell", color=(0.86,0.88,0.92), transparency=0))
+
+    # Labio (toro protector plasmático)
+    tor = Part.makeTorus(intake_d/2.0, intake_lip_r)
+    tor = place_shape(tor, rot_axis=App.Vector(0,1,0), rot_deg=-90)
+    tor.translate(App.Vector(nose_x + intake_depth, 0, 0))
+    objs.append(add_part(doc, tor, "IntakeLip", color=(0.78,0.78,0.80), transparency=0))
+
+    # Discos de condensación
+    for i in range(cond_n_discs):
+        x_i = nose_x + 12.0 + i*cond_disc_pitch
+        r_out = intake_d/2.0 - 6.0 - i*2.0
+        r_in  = max(10.0, r_out - 10.0)
+        ring = make_ring(r_out, r_in, cond_disc_t)
+        ring = place_shape(ring, rot_axis=App.Vector(0,1,0), rot_deg=-90)
+        ring.translate(App.Vector(x_i, 0, 0))
+        objs.append(add_part(doc, ring, f"Condenser_{i}", color=(0.92,0.92,0.96), transparency=0))
+    return objs
+
+def build_plasma_filter(doc):
+    objs = []
+    x0 = +caps_cyl_len/2.0 - intake_depth - 40.0 - filter_len/2.0  # encadenado tras la admisión
+    outer = Part.makeCylinder(filter_r_out, filter_len, App.Vector(x0 - filter_len/2.0, 0, 0), App.Vector(1,0,0))
+    inner = Part.makeCylinder(max(4.0, filter_r_out - filter_wall_t), filter_len, App.Vector(x0 - filter_len/2.0, 0, 0), App.Vector(1,0,0))
+    shell = outer.cut(inner)
+    objs.append(add_part(doc, shell, "PlasmaFilter", color=(0.62,0.66,0.72), transparency=0))
+
+    # Cartuchos internos
+    for i in range(filter_pack_n):
+        xi = x0 - filter_len/2.0 + 10.0 + i*(filter_pack_t + filter_pack_gap)
+        disc = Part.makeCylinder(filter_r_out - 10.0, filter_pack_t, App.Vector(xi, 0, 0), App.Vector(1,0,0))
+        objs.append(add_part(doc, disc, f"FilterPack_{i}", color=(0.80,0.82,0.86), transparency=0))
+    return objs
+
+def build_thruster(doc):
+    objs = []
+    tail_x = -caps_cyl_len/2.0
+
+    # Cuerpo del thruster
+    body = Part.makeCylinder(thruster_body_r, thruster_len*0.5, App.Vector(tail_x - thruster_len*0.5, 0, 0), App.Vector(-1,0,0))
+    objs.append(add_part(doc, body, "ThrusterBody", color=(0.56,0.58,0.62), transparency=0))
+
+    # Tobera central grande (paraboloidal, hueca) mirando a -X
+    nozzle = make_shell_from_revolve(thruster_nozzle_d, thruster_nozzle_depth, thruster_wall_t, steps=128)
+    nozzle = place_shape(nozzle, rot_axis=App.Vector(0,1,0), rot_deg=90)  # eje → -X
+    nozzle.translate(App.Vector(tail_x - thruster_len*0.5, 0, 0))
+    objs.append(add_part(doc, nozzle, "MainNozzle", color=(0.84,0.84,0.88), transparency=0))
+
+    # Tobera(s) pequeña(s) auxiliares
+    for i in range(rcs_small_n):
+        ang = i*(360.0/rcs_small_n)
+        rad = thruster_body_r + 12.0
+        y = rad*math.cos(math.radians(ang))
+        z = rad*math.sin(math.radians(ang))
+        cone = Part.makeCone(7.0, 2.5, 22.0)
+        cone = place_shape(cone, rot_axis=App.Vector(0,1,0), rot_deg=90)
+        cone.translate(App.Vector(tail_x - 30.0, y, z))
+        objs.append(add_part(doc, cone, f"AuxNozzle_{i}", color=(0.72,0.74,0.78), transparency=0))
+    return objs
+
+def build_curved_radiators(doc):
+    """
+    Radiadores como sectores anulares extruidos a lo largo de X.
+    Pares en ±Y y opcionalmente en ±Z.
+    """
+    objs = []
+    R_out = caps_rad + rad_gap_from_hull + rad_radial_t
+    R_in  = R_out - rad_radial_t
+
+    sector_face = make_annular_sector_face(R_out, R_in, rad_angle_deg, nseg=64)
+    # Extruir a lo largo de X y centrar
+    panel = sector_face.extrude(App.Vector(rad_len_x, 0, 0))
+    panel.translate(App.Vector(-rad_len_x/2.0, 0, 0))
+
+    # ±Y panels
+    pY = add_part(doc, panel, "Radiator_PosY", color=(0.78,0.80,0.84), transparency=0)
+    nY = add_part(doc, place_shape(panel, rot_axis=App.Vector(1,0,0), rot_deg=180), "Radiator_NegY", color=(0.78,0.80,0.84), transparency=0)
+    objs += [pY, nY]
+
+    if rad_n_panels >= 2:
+        # ±Z panels: rotar 90° alrededor X para centrar en ±Z
+        pZ = add_part(doc, place_shape(panel, rot_axis=App.Vector(1,0,0), rot_deg=90),  "Radiator_PosZ", color=(0.78,0.80,0.84), transparency=0)
+        nZ = add_part(doc, place_shape(panel, rot_axis=App.Vector(1,0,0), rot_deg=-90), "Radiator_NegZ", color=(0.78,0.80,0.84), transparency=0)
+        objs += [pZ, nZ]
+    return [o for o in objs if o is not None]
+
+def build_manifolds_and_pipes(doc):
+    """
+    Manifolds térmicos anulares (toros) y tuberías principales.
+    """
+    objs = []
+    R_man = caps_rad - 12.0
+
+    # Manifold frontal (cerca de la nariz)
+    tor_front = Part.makeTorus(R_man, manifold_r_tube)
+    tor_front = place_shape(tor_front, rot_axis=App.Vector(0,1,0), rot_deg=-90)
+    tor_front.translate(App.Vector(manifold_front_x, 0, 0))
+    objs.append(add_part(doc, tor_front, "ThermalManifoldFront", color=(0.80,0.76,0.40), transparency=0))
+
+    # Manifold medio
+    tor_mid = Part.makeTorus(R_man, manifold_r_tube)
+    tor_mid = place_shape(tor_mid, rot_axis=App.Vector(0,1,0), rot_deg=-90)
+    tor_mid.translate(App.Vector(manifold_mid_x, 0, 0))
+    objs.append(add_part(doc, tor_mid, "ThermalManifoldMid", color=(0.80,0.76,0.40), transparency=0))
+
+    # Línea principal: admisión → filtro → thruster (eje X)
+    x_intake_out = +caps_cyl_len/2.0 + 12.0 + (cond_n_discs-1)*cond_disc_pitch
+    x_filter_ctr = +caps_cyl_len/2.0 - intake_depth - 40.0
+    x_thr_before = -caps_cyl_len/2.0 - 10.0
+
+    pipe1 = Part.makeCylinder(pipe_r, abs(x_filter_ctr - x_intake_out), App.Vector(min(x_filter_ctr, x_intake_out), 0, 0), App.Vector(1,0,0))
+    objs.append(add_part(doc, pipe1, "Pipe_IntakeToFilter", color=(0.74,0.78,0.82), transparency=0))
+
+    pipe2 = Part.makeCylinder(pipe_r, abs(x_filter_ctr - x_thr_before), App.Vector(min(x_filter_ctr, x_thr_before), 0, 0), App.Vector(1,0,0))
+    objs.append(add_part(doc, pipe2, "Pipe_FilterToThruster", color=(0.74,0.78,0.82), transparency=0))
+
+    # Ramales del manifold medio a radiadores (4 si hay ±Y/±Z)
+    taps = []
+    if rad_n_panels == 1:
+        taps = [0.0, 180.0]  # ±Y
+    else:
+        taps = [0.0, 90.0, 180.0, 270.0]  # ±Y/±Z
+    for ang in taps:
+        rad = caps_rad + rad_gap_from_hull/2.0
+        y = rad*math.cos(math.radians(ang))
+        z = rad*math.sin(math.radians(ang))
+        # tramo radial corto hacia fuera
+        leg = Part.makeCylinder(pipe_r*0.9, abs((R_man + rad_gap_from_hull) - R_man),
+                                App.Vector(manifold_mid_x, 0, 0), App.Vector(0, math.cos(math.radians(ang)), math.sin(math.radians(ang))))
+        objs.append(add_part(doc, leg, f"Pipe_ManifoldLeg_{int(ang)}", color=(0.74,0.78,0.82), transparency=0))
+    return objs
+
+def build_tanks_and_pumps(doc):
+    objs = []
+    # Dos tanques a ±Z dentro del casco
+    x_ctr = -20.0
+    for sgn in (+1, -1):
+        base = App.Vector(x_ctr, -tank_len/2.0, sgn*(caps_rad - tank_r - 18.0))
+        tank = Part.makeCylinder(tank_r, tank_len, base, App.Vector(0,1,0))
+        objs.append(add_part(doc, tank, f"HydrogenTank_{'Top' if sgn>0 else 'Bottom'}", color=(0.86,0.88,0.92), transparency=0))
+
+    # Bombas y actuadores próximos a los tanques
+    px, py, pz = pump_blk
+    for sgn in (+1, -1):
+        blk = Part.makeBox(px, py, pz)
+        blk.translate(App.Vector(x_ctr - px/2.0 - 16.0, -py/2.0, sgn*(caps_rad - pz/2.0 - 12.0)))
+        objs.append(add_part(doc, blk, f"PumpBlock_{'Top' if sgn>0 else 'Bottom'}", color=(0.92,0.82,0.54), transparency=0))
+    return objs
+
+# ===================== Ensamblado y exportación =====================
+def main():
+    doc = App.newDocument("CapsuleCollectorAdvanced")
+    objs = []
+    objs += build_capsule_shell(doc)
+    objs += build_intake(doc)
+    objs += build_plasma_filter(doc)
+    objs += build_thruster(doc)
+    objs += build_curved_radiators(doc)
+    objs += build_manifolds_and_pipes(doc)
+    objs += build_tanks_and_pumps(doc)
+
+    doc.recompute()
+    try:
+        Part.export([o for o in objs if o is not None], export_path)
+        App.Console.PrintMessage("STEP exportado a: %s\n" % export_path)
+    except Exception as e:
+        App.Console.PrintError("No se pudo exportar STEP: %s\n" % e)
+    return doc
+
+# Ejecutar
+main()

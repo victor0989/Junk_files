@@ -1,0 +1,270 @@
+# -*- coding: utf-8 -*-
+# FreeCAD macro: Sistema de combustible + tobera (paramétrico)
+# Víctor — conjunto paramétrico con tanque, acumulador, líneas, bridas, válvulas mini y tobera
+# Probado con FreeCAD 0.20/0.21 (Part, PartDesign opcional, Fem opcional)
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+doc = App.newDocument("SistemaCombustible")
+
+# --------------------------
+# Parámetros (mm)
+# --------------------------
+params = {
+    "tank_D": 600.0, "tank_L": 1200.0, "tank_t": 3.0,
+    "cap_sag": 120.0,            # flecha casquete (mm)
+    "accum_D": 220.0, "accum_L": 500.0, "accum_t": 2.0,
+    "pipe_main_OD": 28.0, "pipe_main_t": 2.0,
+    "pipe_ret_OD": 18.0, "pipe_ret_t": 1.5,
+    "mini_valve_PCD": 36.0, "mini_valve_n": 4, "mini_valve_bolt": 6.0,
+    "flange_OD": 220.0, "flange_ID": 150.0, "flange_t": 12.0,
+    "flange_PCD": 190.0, "flange_n": 12, "flange_bolt": 8.0, "flange_bolt_clear": 8.5,
+    "noz_throat": 110.0, "noz_exit": 260.0, "noz_len": 420.0, "noz_t": 2.2,
+    # Posicionamiento (mm)
+    "z0_tank": 0.0,               # centro del tanque en Z
+    "z0_nozzle": -900.0,          # referencia axial de la tobera (ajustable)
+    "pipe_clear": 30.0,           # holgura respecto a superficies (routing)
+}
+
+# Utilidades
+def make_bolt_circle(OD_plate, t_plate, n, PCD, hole_D, origin=App.Vector(0,0,0), axis=App.Vector(0,0,1), base=None, name="BC"):
+    """Crea o taladra un patrón de agujeros sobre un sólido base."""
+    holes = []
+    for i in range(n):
+        ang = 2.0*math.pi*i/n
+        x = (PCD/2.0)*math.cos(ang)
+        y = (PCD/2.0)*math.sin(ang)
+        cyl = Part.makeCylinder(hole_D/2.0, t_plate*1.5, origin.add(App.Vector(x,y,-t_plate*0.25)), axis)
+        holes.append(cyl)
+    tool = holes[0]
+    for h in holes[1:]:
+        tool = tool.fuse(h)
+    if base is None:
+        plate = Part.makeCylinder(OD_plate/2.0, t_plate, origin, axis)
+        cut = plate.cut(tool)
+        obj = doc.addObject("Part::Feature", name)
+        obj.Shape = cut
+        return obj
+    else:
+        cut = base.Shape.cut(tool)
+        base.Shape = cut
+        base.Label = name
+        return base
+
+def hollow_solid_outer_minus_inner(outer, thickness):
+    """Crea una pared usando sustracción de sólido interno escalado (cilindros/esferas)"""
+    return outer, thickness
+
+# --------------------------
+# 1) Tanque principal (cilindro + casquetes esféricos) con espesor
+# --------------------------
+Ro = params["tank_D"]/2.0
+t_tank = params["tank_t"]
+Ri = Ro - t_tank
+L = params["tank_L"]
+sag = params["cap_sag"]
+# Radio esfera que produce flecha "sag" sobre radio a=Ro: R = (s^2 + a^2)/(2s)
+Rcap = ((sag**2) + (Ro**2)) / (2.0*sag)
+
+# Eje Z: tanque centrado en z0_tank
+z0 = params["z0_tank"]
+z_min = z0 - L/2.0
+z_max = z0 + L/2.0
+
+# Capa exterior
+cyl_outer = Part.makeCylinder(Ro, L, App.Vector(0,0,z_min), App.Vector(0,0,1))
+# Casquete superior
+cz_top = z_max + (Rcap - sag)
+sph_top = Part.makeSphere(Rcap, App.Vector(0,0,cz_top))
+# Cortar esfera para obtener casquete: mantener por debajo de z = z_max + sag
+box_cut_top = Part.makeBox(4*Ro, 4*Ro, 4*Rcap, App.Vector(-2*Ro,-2*Ro, z_max))
+cap_top = sph_top.common(box_cut_top)
+# Casquete inferior
+cz_bot = z_min - (Rcap - sag)
+sph_bot = Part.makeSphere(Rcap, App.Vector(0,0,cz_bot))
+box_cut_bot = Part.makeBox(4*Ro, 4*Ro, 4*Rcap, App.Vector(-2*Ro,-2*Ro, cz_bot))
+# Mantener por encima de z = z_min - sag
+plane_bot = Part.makeBox(4*Ro, 4*Ro, 4*Rcap, App.Vector(-2*Ro,-2*Ro, z_min - 2*Rcap))
+cap_bot = sph_bot.common(plane_bot)
+# Ensamble exterior
+tank_outer = cyl_outer.fuse([cap_top, cap_bot])
+
+# Capa interior
+cyl_inner = Part.makeCylinder(Ri, L, App.Vector(0,0,z_min), App.Vector(0,0,1))
+Rcap_in = ((sag**2) + (Ri**2)) / (2.0*sag)  # aproximación para mantener unión limpia
+sph_top_in = Part.makeSphere(Rcap_in, App.Vector(0,0, z_max + (Rcap_in - sag)))
+cap_top_in = sph_top_in.common(box_cut_top)  # reutilizamos cortes
+sph_bot_in = Part.makeSphere(Rcap_in, App.Vector(0,0, z_min - (Rcap_in - sag)))
+cap_bot_in = sph_bot_in.common(plane_bot)
+tank_inner = cyl_inner.fuse([cap_top_in, cap_bot_in])
+
+# Pared del tanque
+tank_shell = tank_outer.cut(tank_inner)
+obj_tank = doc.addObject("Part::Feature", "Tanque_Principal")
+obj_tank.Shape = tank_shell
+
+# Boquilla de drenaje/inyección (boquillas simples para conexión de líneas)
+# Orificio inferior (principal) y superior (retorno) como pads (se pueden sustituir por toberas reales)
+port_main_D = 40.0  # orificio de servicio (ajustable)
+port_ret_D = 25.0
+# Perforaciones en casquete inferior y superior
+hole_main = Part.makeCylinder(port_main_D/2.0, t_tank*2, App.Vector(0,0,z_min - t_tank), App.Vector(0,0,1))
+hole_ret = Part.makeCylinder(port_ret_D/2.0, t_tank*2, App.Vector(Ro*0.6,0,z_max - t_tank), App.Vector(0,0,1))
+obj_tank.Shape = obj_tank.Shape.cut(hole_main)
+obj_tank.Shape = obj_tank.Shape.cut(hole_ret)
+
+# --------------------------
+# 2) Acumulador (cilindro con tapas planas) con espesor
+# --------------------------
+Da = params["accum_D"]; La = params["accum_L"]; ta = params["accum_t"]
+Ra_o = Da/2.0; Ra_i = Ra_o - ta
+z_acc = z0 + 400.0  # posición sobre el tanque (ajustable)
+acc_outer = Part.makeCylinder(Ra_o, La, App.Vector(Ro + 200.0, 0, z_acc - La/2.0), App.Vector(0,0,1))
+acc_inner = Part.makeCylinder(Ra_i, La, App.Vector(Ro + 200.0, 0, z_acc - La/2.0), App.Vector(0,0,1))
+acc_shell = acc_outer.cut(acc_inner)
+obj_acc = doc.addObject("Part::Feature", "Acumulador")
+obj_acc.Shape = acc_shell
+
+# --------------------------
+# 3) Brida motor-cámara
+# --------------------------
+fl_OD = params["flange_OD"]; fl_ID = params["flange_ID"]; fl_t = params["flange_t"]
+fl_PCD = params["flange_PCD"]; fl_n = params["flange_n"]; fl_bclr = params["flange_bolt_clear"]
+z_flange = params["z0_nozzle"]  # cara aguas arriba
+fl_outer = Part.makeCylinder(fl_OD/2.0, fl_t, App.Vector(0,0,z_flange - fl_t), App.Vector(0,0,1))
+fl_inner = Part.makeCylinder(fl_ID/2.0, fl_t*1.2, App.Vector(0,0,z_flange - fl_t*0.1), App.Vector(0,0,1))
+fl = fl_outer.cut(fl_inner)
+obj_flange = doc.addObject("Part::Feature", "Brida_Motor")
+obj_flange.Shape = fl
+make_bolt_circle(fl_OD, fl_t, fl_n, fl_PCD, fl_bclr, origin=App.Vector(0,0,z_flange - fl_t), base=obj_flange, name="Brida_Motor_Agujeros")
+
+# --------------------------
+# 4) Tobera cónica (CD) pared constante (t = noz_t)
+# --------------------------
+rt = params["noz_throat"]/2.0
+re = params["noz_exit"]/2.0
+L_noz = params["noz_len"]
+t_noz = params["noz_t"]
+ri_inlet = fl_ID/2.0  # radio de entrada igual al ID de la brida
+
+# Diseño geométrico: sección convergente a 30°, divergente calculada para cumplir L_total
+deg = math.pi/180.0
+alpha_conv = 30.0*deg
+L_conv = (ri_inlet - rt) / math.tan(alpha_conv)
+L_div = max(5.0, L_noz - L_conv)
+alpha_div = math.atan2((re - rt), L_div)
+
+# Perfil meridional (eje Z a lo largo de la tobera, revoluciona alrededor de Z)
+# Z=0 en cara de la brida (lado cámara). Hacia +Z diverge.
+z0_noz = z_flange
+# Outer profile (radio externo)
+# Segmentos: entrada (ri_inlet) -> garganta (rt) -> salida (re)
+p_in = App.Vector(ri_inlet + t_noz, 0, z0_noz)  # punto sobre radio externo en entrada
+p_th = App.Vector(rt + t_noz, 0, z0_noz + L_conv)
+p_ex = App.Vector(re + t_noz, 0, z0_noz + L_conv + L_div)
+
+# Inner profile
+pi_in = App.Vector(ri_inlet, 0, z0_noz)
+pi_th = App.Vector(rt, 0, z0_noz + L_conv)
+pi_ex = App.Vector(re, 0, z0_noz + L_conv + L_div)
+
+# Construcción de caras por revolución de wire cerrado (outer + cierre + inner + cierre)
+outer_edge1 = Part.makeLine(p_in, p_th)
+outer_edge2 = Part.makeLine(p_th, p_ex)
+inner_edge2 = Part.makeLine(pi_ex, pi_th)
+inner_edge1 = Part.makeLine(pi_th, pi_in)
+cap_up = Part.makeLine(p_ex, pi_ex)
+cap_down = Part.makeLine(pi_in, p_in)
+
+wire_noz = Part.Wire([outer_edge1, outer_edge2, cap_up, inner_edge2, inner_edge1, cap_down])
+face_noz = Part.Face(wire_noz)
+nozzle_solid = face_noz.revolve(App.Vector(0,0,0), App.Vector(0,0,1), 360.0)
+
+obj_nozzle = doc.addObject("Part::Feature", "Tobera")
+obj_nozzle.Shape = nozzle_solid
+
+# --------------------------
+# 5) Líneas y válvulas (sweep de anillos) + mini bridas 4xM6
+# --------------------------
+def tube_from_path(points, OD, t, name):
+    # Crea un tubo por barrido: se barre cilindro exterior y se resta el interior
+    path_wire = Part.makePolygon([App.Vector(*p) for p in points])
+    spine = Part.Wire(path_wire.Edges)
+    sec_outer = Part.Circle()
+    sec_outer.Radius = OD/2.0
+    sec_outer_pl = Part.Plane()
+    # Sección en el primer punto, normal al eje Z (simplificado)
+    sec_outer_geom = Part.Face(Part.Wire(Part.Edge(sec_outer)))
+    outer = sec_outer_geom.makePipeShell([spine], True, False)
+    # Interior
+    ID = OD - 2.0*t
+    sec_inner = Part.Circle()
+    sec_inner.Radius = ID/2.0
+    sec_inner_geom = Part.Face(Part.Wire(Part.Edge(sec_inner)))
+    inner = sec_inner_geom.makePipeShell([spine], True, False)
+    tube = outer.cut(inner)
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = tube
+    return obj
+
+# Línea principal: desde puerto inferior del tanque hacia la brida/cámara
+pmOD = params["pipe_main_OD"]; pmt = params["pipe_main_t"]
+start_main = (0.0, 0.0, z_min - t_tank/2.0)  # salida inferior
+# Ruta sencilla: bajar 80 mm, girar y subir hasta la brida
+path_main = [
+    start_main,
+    (0.0, -Ro - 150.0, z_min - 80.0),
+    (0.0, -Ro - 150.0, z_flange - fl_t/2.0),
+]
+obj_main = tube_from_path(path_main, pmOD, pmt, "Linea_Principal")
+
+# Válvula mini + bridas en línea principal
+mini_PCD = params["mini_valve_PCD"]; mini_n = params["mini_valve_n"]; mini_bclr = 6.5
+mini_thick = 8.0; mini_OD = pmOD + 20.0; mini_ID = pmOD - 2*pmt
+# Dos bridas enfrentadas
+for idx, zloc in enumerate([ (z_flange + z_min)/2.0 - 40.0, (z_flange + z_min)/2.0 + 40.0 ]):
+    plate = Part.makeCylinder(mini_OD/2.0, mini_thick, App.Vector(0.0, -Ro - 150.0, zloc - mini_thick/2.0), App.Vector(0,0,1))
+    bore = Part.makeCylinder(mini_ID/2.0, mini_thick*1.2, App.Vector(0.0, -Ro - 150.0, zloc - mini_thick*0.1), App.Vector(0,0,1))
+    plate = plate.cut(bore)
+    obj_plate = doc.addObject("Part::Feature", f"MiniBrida_{idx+1}")
+    obj_plate.Shape = plate
+    make_bolt_circle(mini_OD, mini_thick, mini_n, mini_PCD, mini_bclr, origin=App.Vector(0.0, -Ro - 150.0, zloc - mini_thick/2.0), base=obj_plate, name=f"MiniBrida_{idx+1}_BC")
+
+# Línea retorno: desde puerto superior del tanque a acumulador
+prOD = params["pipe_ret_OD"]; prt = params["pipe_ret_t"]
+start_ret = (Ro*0.6, 0.0, z_max + t_tank/2.0)
+path_ret = [
+    start_ret,
+    (Ro*0.6, 120.0, z_max + 80.0),
+    (Ro + 200.0, 120.0, z_acc),
+    (Ro + 200.0, 0.0, z_acc),
+]
+obj_ret = tube_from_path(path_ret, prOD, prt, "Linea_Retorno")
+
+# --------------------------
+# 6) Grupo y vista
+# --------------------------
+grp = doc.addObject("App::DocumentObjectGroup", "Conjunto_SistemaCombustible")
+for o in [obj_tank, obj_acc, obj_flange, obj_nozzle, obj_main, obj_ret]:
+    grp.addObject(o)
+
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.setAxisCross(True)
+    Gui.ActiveDocument.ActiveView.fitAll()
+except:
+    pass
+
+# --------------------------
+# 7) Marcadores FEM (opcional, editable manualmente)
+#    - Presión interna tanque: 0.2 MPa (2 bar(g))
+#    - Presión cámara/tobera: 2–3 MPa (20–30 bar(g))
+#    - Aceleración 6g axial (Z-)
+#    - Fijo en cara de la brida motor (aguas arriba)
+#    - Refinamiento de malla en garganta: 2–3 mm
+# --------------------------
+# Para usar FEM en FreeCAD: crea un análisis, asigna materiales y selecciona caras
+# según tus necesidades. Esta macro solo deja el conjunto preparado con nombres coherentes.

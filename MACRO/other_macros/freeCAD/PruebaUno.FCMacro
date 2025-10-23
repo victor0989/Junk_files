@@ -1,0 +1,121 @@
+# -*- coding: utf-8 -*-
+# Macro: Propulsor_Industrial
+# Autor: Víctor + ChatGPT
+# Descripción: Modelo industrial detallado de un propulsor de ~3.8 m
+# Compatible: FreeCAD 0.20+
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import csv
+import os
+
+doc = App.newDocument("Propulsor_Industrial")
+
+# ================================
+# PARÁMETROS GENERALES
+# ================================
+LARGO_PROPULSOR = 3800  # mm
+DIAMETRO_CUERPO = 1200  # mm
+ESPESOR_PARED = 20      # mm
+
+# Materiales (densidad en g/mm3)
+MATERIALES = {
+    "Aluminio_7075": 0.00281,
+    "Titanio_Gr5": 0.00443,
+    "Acero_Inox": 0.0079
+}
+
+# Lista para BOM
+BOM = []
+
+# ================================
+# FUNCIONES AUXILIARES
+# ================================
+def crear_bom_entry(nombre, volumen, material):
+    densidad = MATERIALES[material]
+    masa = volumen * densidad
+    BOM.append({"Nombre": nombre, "Material": material, "Volumen_mm3": volumen, "Masa_g": masa})
+    return masa
+
+# ================================
+# CUERPO PRINCIPAL
+# ================================
+cuerpo_ext = Part.makeCylinder(DIAMETRO_CUERPO/2, LARGO_PROPULSOR)
+cuerpo_int = Part.makeCylinder((DIAMETRO_CUERPO/2)-ESPESOR_PARED, LARGO_PROPULSOR)
+cuerpo = cuerpo_ext.cut(cuerpo_int)
+masa_cuerpo = crear_bom_entry("Cuerpo Principal", cuerpo.Volume, "Aluminio_7075")
+
+# Asignar color
+cuerpo_shape = doc.addObject("Part::Feature", "Cuerpo_Principal")
+cuerpo_shape.Shape = cuerpo
+cuerpo_shape.ViewObject.ShapeColor = (0.7, 0.7, 0.7)
+
+# ================================
+# BRIDAS CON TORNILLERÍA
+# ================================
+brida_ext = Part.makeCylinder(DIAMETRO_CUERPO/2 + 30, 20)
+brida_int = Part.makeCylinder(DIAMETRO_CUERPO/2 - 20, 20)
+brida = brida_ext.cut(brida_int)
+
+# Tornillos
+tornillo = Part.makeCylinder(5, 25)
+for i in range(12):
+    ang = (360/12)*i
+    torn = tornillo.copy()
+    torn.translate(App.Vector((DIAMETRO_CUERPO/2 + 10) * App.cos(App.Units.Quantity(str(ang) + " deg")), 
+                               (DIAMETRO_CUERPO/2 + 10) * App.sin(App.Units.Quantity(str(ang) + " deg")), 
+                               0))
+    brida = brida.fuse(torn)
+
+masa_brida = crear_bom_entry("Brida Frontal", brida.Volume, "Acero_Inox")
+brida_shape = doc.addObject("Part::Feature", "Brida_Frontal")
+brida_shape.Shape = brida
+brida_shape.ViewObject.ShapeColor = (0.4, 0.4, 0.4)
+
+# ================================
+# SOPORTES ESTRUCTURALES
+# ================================
+soporte = Part.makeBox(100, 20, 200)
+soporte.translate(App.Vector(DIAMETRO_CUERPO/2, -10, 100))
+masa_soporte = crear_bom_entry("Soporte Estructural", soporte.Volume, "Titanio_Gr5")
+soporte_shape = doc.addObject("Part::Feature", "Soporte")
+soporte_shape.Shape = soporte
+soporte_shape.ViewObject.ShapeColor = (0.6, 0.6, 0.8)
+
+# ================================
+# CANAL HELICOIDAL DE REFRIGERACIÓN
+# ================================
+helix = Part.makeHelix(50, LARGO_PROPULSOR, 200)
+perfil = Part.makeCircle(5)
+perfil.translate(App.Vector(200, 0, 0))
+canal = perfil.makePipeShell([helix], True, True)
+masa_canal = crear_bom_entry("Canal Refrigeración", canal.Volume, "Titanio_Gr5")
+canal_shape = doc.addObject("Part::Feature", "Canal_Refrigeracion")
+canal_shape.Shape = canal
+canal_shape.ViewObject.ShapeColor = (0.3, 0.3, 0.7)
+
+# ================================
+# EXPORTAR BOM
+# ================================
+bom_path = os.path.join(os.path.expanduser("~"), "BOM_Propulsor.csv")
+with open(bom_path, mode="w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=["Nombre", "Material", "Volumen_mm3", "Masa_g"])
+    writer.writeheader()
+    for item in BOM:
+        writer.writerow(item)
+
+# ================================
+# EXPORTAR A STEP
+# ================================
+step_path = os.path.join(os.path.expanduser("~"), "Propulsor_Industrial.step")
+Part.export([cuerpo_shape, brida_shape, soporte_shape, canal_shape], step_path)
+
+# ================================
+# ACTUALIZAR VISTA
+# ================================
+Gui.SendMsgToActiveView("ViewFit")
+Gui.activeDocument().activeView().viewIsometric()
+
+print(f"Modelo terminado. BOM exportado a: {bom_path}")
+print(f"STEP exportado a: {step_path}")
