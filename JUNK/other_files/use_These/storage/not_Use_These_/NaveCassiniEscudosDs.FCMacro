@@ -1,0 +1,366 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+# Document
+doc_name = "CassiniLike_EcoSatellite"
+doc = App.ActiveDocument if App.ActiveDocument and App.ActiveDocument.Label == doc_name else App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# -----------------------------
+# Parameters (Cassini-like scale)
+# -----------------------------
+P = {
+    # Global + modes
+    "eco_mode": True,              # True: sin RTG, paneles solares grandes
+    "mass_margin_pct": 8.0,
+
+    # Bus principal (cilindro con tapas)
+    "bus_len": 6500.0,
+    "bus_outer_d": 4200.0,
+    "bus_inner_d": 3600.0,
+    "bus_t": 12.0,
+
+    # Antena HGA (parabólica)
+    "hga_R": 2000.0,               # Cassini ~4 m diámetro
+    "hga_t": 20.0,
+    "hga_offset": 600.0,
+    "hga_mast_len": 1800.0,
+    "hga_mast_d": 220.0,
+
+    # Antenas LGA (dos conos/cilindros pequeños)
+    "lga_d": 400.0,
+    "lga_len": 600.0,
+    "lga_count": 2,
+
+    # Tanques y propelentes (tanque principal y helio)
+    "prop_tank_len": 2800.0,
+    "prop_tank_d": 2400.0,
+    "helium_tank_d": 900.0,
+    "helium_tank_len": 1200.0,
+
+    # Escudo frontal y estructura (cap, shoulder)
+    "front_cap_R": 2400.0,
+    "front_cap_t": 120.0,
+    "front_cap_offset": 520.0,
+    "front_shoulder_len": 1000.0,
+    "front_shoulder_d": 4200.0,
+
+    # RTG (opcional)
+    "rtg_box_l": 1400.0,
+    "rtg_box_w": 780.0,
+    "rtg_box_t": 320.0,
+    "rtg_arm_len": 1600.0,
+    "rtg_arm_d": 220.0,
+    "rtg_offset_y": 1600.0,
+
+    # Paneles solares (modo eco)
+    "solar_len": 5200.0,
+    "solar_w": 1800.0,
+    "solar_t": 85.0,
+    "solar_angle_deg": 15.0,
+
+    # Radiadores
+    "rad_len": 2600.0,
+    "rad_w": 1000.0,
+    "rad_t": 50.0,
+
+    # Mástiles y booms
+    "mag_boom_len": 9500.0,
+    "mag_boom_d": 140.0,
+    "rpws_boom_len": 6600.0,
+    "rpws_boom_d": 120.0,
+
+    # Clústeres de thrusters (RCS y principales)
+    "rcs_thr_d": 280.0,
+    "rcs_thr_len": 700.0,
+    "rcs_ring_R": 2200.0,
+    "rcs_count": 8,
+
+    "main_thr_d": 650.0,
+    "main_thr_len": 1400.0,
+    "main_thr_cluster_R": 1400.0,
+    "main_thr_count": 4,
+
+    # Compartimentos de instrumentos
+    "inst_pallet_l": 2200.0,
+    "inst_pallet_w": 3600.0,
+    "inst_pallet_t": 260.0,
+    "payload_bay_len": 2000.0,
+    "payload_bay_d": 3200.0,
+
+    # Huygens probe (soporte y cápsula)
+    "huygens_d": 2200.0,
+    "huygens_t": 180.0,
+    "huygens_offset_x": 1400.0,
+
+    # AACS (caja electrónica simplificada)
+    "aacs_box_l": 1200.0,
+    "aacs_box_w": 900.0,
+    "aacs_box_t": 500.0,
+
+    # Anillos/estructura
+    "frame_ring_d": 3800.0,
+    "frame_ring_t": 110.0,
+
+    # Shields (radiación/whipple simplificados)
+    "rad_shield_inner_d": 4600.0,
+    "rad_shield_t": 90.0,
+    "rad_shield_len": 4800.0,
+
+    "whipple_t": 40.0,
+    "whipple_gap": 180.0,
+    "aft_shield_len": 1600.0,
+
+    # Colores (RGB 0-1)
+    "c_master": (0.12, 0.28, 0.50),
+    "c_hga": (0.90, 0.90, 0.95),
+    "c_lga": (0.85, 0.85, 0.90),
+    "c_rtg": (0.85, 0.80, 0.20),
+    "c_solar": (0.15, 0.45, 0.85),
+    "c_radiator": (0.25, 0.35, 0.50),
+    "c_boom": (0.60, 0.60, 0.70),
+    "c_thr": (0.35, 0.35, 0.40),
+    "c_inst": (0.70, 0.70, 0.75),
+    "c_huygens": (0.80, 0.75, 0.65),
+    "c_aacs": (0.75, 0.75, 0.80),
+    "c_shield": (0.15, 0.15, 0.20),
+}
+
+# Materials (kg/m^3)
+M = {"CFRP": 1600.0, "Al": 2700.0, "Ti": 4500.0, "Inconel": 8200.0, "Ta": 16600.0, "Cu": 8960.0, "Kevlar": 1440.0}
+
+# -----------------------------
+# Helpers
+# -----------------------------
+X_AXIS, Y_AXIS, Z_AXIS = App.Vector(1,0,0), App.Vector(0,1,0), App.Vector(0,0,1)
+rot_to_x = lambda: App.Rotation(Y_AXIS, 90)
+
+def add_obj(s, n, rgb=None):
+    o = doc.addObject("Part::Feature", n); o.Shape = s
+    if rgb and hasattr(o, "ViewObject"): o.ViewObject.ShapeColor = rgb
+    return o
+
+def cyl_x(d, L, cx=0, cy=0, cz=0):
+    s = Part.makeCylinder(d/2.0, L)
+    s.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return s
+
+def cone_x(d1, d2, L, cx=0, cy=0, cz=0):
+    if abs(d1 - d2) < 1e-6:  # radios iguales → cilindro
+        s = Part.makeCylinder(d1/2.0, L)
+    else:
+        s = Part.makeCone(d1/2.0, d2/2.0, L)
+    s.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return s
+
+def box_at(l, w, t, x, y, z):
+    b = Part.makeBox(l, w, t); b.translate(App.Vector(x, y, z))
+    return b
+
+def ring_positions(cx, R, n):
+    return [(cx + R*math.cos(math.radians(i*360.0/n)),
+             R*math.sin(math.radians(i*360.0/n))) for i in range(n)]
+
+# -----------------------------
+# Core geometry
+# -----------------------------
+cx = 0.0
+
+# Bus shell
+bus_outer = cyl_x(P["bus_outer_d"], P["bus_len"], cx=cx)
+bus_inner = cyl_x(P["bus_inner_d"], P["bus_len"] - 2.0*P["bus_t"], cx=cx)
+bus_shell = bus_outer.cut(bus_inner)
+
+# Front cap (parcial esférico recortado) + shoulder
+cap_center_x = cx + P["bus_len"]/2.0 + P["front_cap_offset"]
+cap_R, cap_t = P["front_cap_R"], P["front_cap_t"]
+sph_out = Part.makeSphere(cap_R)
+sph_in = Part.makeSphere(cap_R - cap_t)
+sph_out.Placement = sph_in.Placement = App.Placement(App.Vector(cap_center_x,0,0), App.Rotation())
+cut_box = Part.makeBox(2*cap_R, 4*cap_R, 4*cap_R, App.Vector(cap_center_x - cap_R, -2*cap_R, -2*cap_R))
+front_cap = sph_out.common(cut_box).cut(sph_in.common(cut_box))
+
+shoulder_cx = cap_center_x - P["front_shoulder_len"]/2.0
+shoulder = cone_x(P["front_shoulder_d"], P["bus_outer_d"], P["front_shoulder_len"], cx=shoulder_cx)
+
+# Frame ring y escudo radiación
+frame_ring = cyl_x(P["frame_ring_d"], P["frame_ring_t"], cx=cx + P["bus_len"]*0.15)
+r_shield_outer = cyl_x(P["rad_shield_inner_d"] + 2.0*P["rad_shield_t"], P["rad_shield_len"], cx=cx)
+r_shield_inner = cyl_x(P["rad_shield_inner_d"], P["rad_shield_len"], cx=cx)
+rad_shield = r_shield_outer.cut(r_shield_inner)
+
+# Whipple/aft shield
+w_out = cyl_x(P["bus_outer_d"] + P["whipple_gap"], P["aft_shield_len"], cx=cx - P["bus_len"]*0.35)
+w_in = cyl_x(P["bus_outer_d"] + P["whipple_gap"] - P["whipple_t"], P["aft_shield_len"], cx=cx - P["bus_len"]*0.35)
+aft_whipple = w_out.cut(w_in)
+
+# MasterSolid (estructura principal)
+MasterSolidShape = bus_shell.fuse(front_cap).fuse(shoulder).fuse(frame_ring).fuse(rad_shield).fuse(aft_whipple)
+MasterSolid = add_obj(MasterSolidShape, "MasterSolid", P["c_master"])
+
+# -----------------------------
+# Antenas
+# -----------------------------
+# HGA
+hga_center_x = cap_center_x - P["hga_offset"]
+hga_outer = Part.makeSphere(P["hga_R"])
+hga_inner = Part.makeSphere(P["hga_R"] - P["hga_t"])
+hga_outer.Placement = hga_inner.Placement = App.Placement(App.Vector(hga_center_x,0,0), App.Rotation())
+hga_cut_box = Part.makeBox(2*P["hga_R"], 4*P["hga_R"], 4*P["hga_R"], App.Vector(hga_center_x - P["hga_R"], -2*P["hga_R"], -2*P["hga_R"]))
+hga_dish = hga_outer.common(hga_cut_box).cut(hga_inner.common(hga_cut_box))
+hga_mast = cyl_x(P["hga_mast_d"], P["hga_mast_len"], cx=hga_center_x - P["hga_mast_len"]/2.0, cy=0, cz=0)
+HGA = add_obj(Part.makeCompound([hga_dish, hga_mast]), "HGA_Assembly", P["c_hga"])
+
+# LGA (dos pequeñas antenas sobre el bus)
+lga_objs = []
+lga_positions = [(cx + P["bus_len"]*0.05,  +P["bus_outer_d"]/2.0 - 300.0, 200.0),
+                 (cx - P["bus_len"]*0.10,  -P["bus_outer_d"]/2.0 + 300.0, 250.0)]
+for i in range(P["lga_count"]):
+    lga = cyl_x(P["lga_d"], P["lga_len"], cx=lga_positions[i][0], cy=lga_positions[i][1], cz=lga_positions[i][2])
+    lga_objs.append(lga)
+LGA = add_obj(Part.makeCompound(lga_objs), "LGA_Array", P["c_lga"])
+
+# -----------------------------
+# Tanques
+# -----------------------------
+prop_tank = cyl_x(P["prop_tank_d"], P["prop_tank_len"], cx=cx - P["bus_len"]*0.20)
+helium_tank = cyl_x(P["helium_tank_d"], P["helium_tank_len"], cx=cx + P["bus_len"]*0.10, cy=0, cz=P["bus_outer_d"]*0.25)
+Tanks = add_obj(Part.makeCompound([prop_tank, helium_tank]), "Tanks", (0.7,0.7,0.7))
+
+# -----------------------------
+# RTG / Solares + radiadores (eco)
+# -----------------------------
+solar_panels = []
+radiators = []
+rtg_compounds = []
+
+if P["eco_mode"]:
+    # Paneles solares laterales
+    s_angle = math.radians(P["solar_angle_deg"])
+    # Panel 1
+    s1 = box_at(P["solar_len"], P["solar_w"], P["solar_t"], cx + P["bus_len"]/2.0, +P["bus_outer_d"]/2.0 + 150.0, 0)
+    # Panel 2
+    s2 = box_at(P["solar_len"], P["solar_w"], P["solar_t"], cx + P["bus_len"]/2.0, -P["bus_outer_d"]/2.0 - P["solar_w"] - 150.0, 0)
+    solar_panels.extend([s1, s2])
+
+    # Radiadores traseros
+    r1 = box_at(P["rad_len"], P["rad_w"], P["rad_t"], cx - P["bus_len"]/2.0 - 300.0, +P["bus_outer_d"]/2.0 - P["rad_w"]/2.0, 0)
+    r2 = box_at(P["rad_len"], P["rad_w"], P["rad_t"], cx - P["bus_len"]/2.0 - 300.0, -P["bus_outer_d"]/2.0 - P["rad_w"]/2.0, 0)
+    radiators.extend([r1, r2])
+else:
+    # RTG en brazos laterales (dos)
+    for side in (+1, -1):
+        base_y = side * P["rtg_offset_y"]
+        rtg_box = box_at(P["rtg_box_l"], P["rtg_box_w"], P["rtg_box_t"], cx - P["bus_len"]/2.0 + 200.0, base_y - P["rtg_box_w"]/2.0, 100.0)
+        rtg_arm = cyl_x(P["rtg_arm_d"], P["rtg_arm_len"], cx=cx - P["bus_len"]/2.0 - P["rtg_arm_len"]/2.0, cy=base_y, cz=140.0)
+        rtg_compounds.append(Part.makeCompound([rtg_box, rtg_arm]))
+
+SolarArray = add_obj(Part.makeCompound(solar_panels) if solar_panels else Part.makeCompound([]), "SolarArray", P["c_solar"])
+Radiators = add_obj(Part.makeCompound(radiators) if radiators else Part.makeCompound([]), "Radiators", P["c_radiator"])
+if rtg_compounds:
+    RTGs = add_obj(Part.makeCompound(rtg_compounds), "RTG_Assembly", P["c_rtg"])
+
+# -----------------------------
+# Booms (magnetómetro y RPWS)
+# -----------------------------
+mag_boom = cyl_x(P["mag_boom_d"], P["mag_boom_len"], cx=cx + P["bus_len"]/2.0, cy=0, cz=0)
+rpws_boom = cyl_x(P["rpws_boom_d"], P["rpws_boom_len"], cx=cx + P["bus_len"]/2.0, cy=0, cz=P["rpws_boom_d"] + 160.0)
+Booms = add_obj(Part.makeCompound([mag_boom, rpws_boom]), "Booms", P["c_boom"])
+
+# -----------------------------
+# Thrusters
+# -----------------------------
+# RCS en anillo alrededor del bus
+thr_rcs = [cyl_x(P["rcs_thr_d"], P["rcs_thr_len"], cx=x, cy=y, cz=0) for (x,y) in ring_positions(cx, P["rcs_ring_R"], P["rcs_count"])]
+RCSThrusters = add_obj(Part.makeCompound(thr_rcs), "RCSThrusters", P["c_thr"])
+
+# Clúster principal (4 alrededor del eje trasero)
+thr_main = [cyl_x(P["main_thr_d"], P["main_thr_len"], cx=cx - P["bus_len"]/2.0 - P["main_thr_len"]/2.0,
+                  cy=P["main_thr_cluster_R"]*math.sin(math.radians(a)),
+                  cz=P["main_thr_cluster_R"]*math.cos(math.radians(a)))
+            for a in (0, 90, 180, 270)]
+MainThrusters = add_obj(Part.makeCompound(thr_main), "MainThrusters", P["c_thr"])
+
+# -----------------------------
+# Instrument pallets + payload
+# -----------------------------
+inst_pallet = box_at(P["inst_pallet_l"], P["inst_pallet_w"], P["inst_pallet_t"], cx - 400.0, -P["inst_pallet_w"]/2.0, -P["inst_pallet_t"]/2.0)
+payload_bay = cyl_x(P["payload_bay_d"], P["payload_bay_len"], cx=cx + 200.0)
+Instrumentation = add_obj(Part.makeCompound([inst_pallet, payload_bay]), "Instrumentation", P["c_inst"])
+
+# -----------------------------
+# Huygens probe (soporte + cápsula)
+# -----------------------------
+huygens_shell_out = Part.makeSphere(P["huygens_d"]/2.0)
+huygens_shell_in = Part.makeSphere(P["huygens_d"]/2.0 - P["huygens_t"])
+huygens_shell_out.Placement = huygens_shell_in.Placement = App.Placement(App.Vector(cx + P["huygens_offset_x"], 0, -P["bus_outer_d"]/2.0 + P["huygens_d"]/2.0 + 250.0), App.Rotation())
+huygens_shell = huygens_shell_out.cut(huygens_shell_in)
+huygens_mount = box_at(900.0, 900.0, 240.0, cx + P["huygens_offset_x"] - 450.0, -450.0, -P["bus_outer_d"]/2.0)
+Huygens = add_obj(Part.makeCompound([huygens_shell, huygens_mount]), "HuygensProbe", P["c_huygens"])
+
+# -----------------------------
+# AACS (caja electrónica)
+# -----------------------------
+AACS = add_obj(box_at(P["aacs_box_l"], P["aacs_box_w"], P["aacs_box_t"],
+                      cx - 300.0, +P["bus_outer_d"]/2.0 - P["aacs_box_w"] - 200.0, 100.0),
+               "AACS_Box", P["c_aacs"])
+
+# -----------------------------
+# Shields visuales
+# -----------------------------
+ShieldVisuals = add_obj(Part.makeCompound([rad_shield, aft_whipple, frame_ring]), "ShieldVisuals", P["c_shield"])
+
+# -----------------------------
+# Materials assignment
+# -----------------------------
+material_map = {
+    "MasterSolid": "Al",
+    "HGA_Assembly": "Al",
+    "LGA_Array": "Al",
+    "Tanks": "Ti",
+    "SolarArray": "CFRP",
+    "Radiators": "CFRP",
+    "RTG_Assembly": "Ti",
+    "Booms": "CFRP",
+    "RCSThrusters": "Inconel",
+    "MainThrusters": "Inconel",
+    "Instrumentation": "Al",
+    "HuygensProbe": "Al",
+    "AACS_Box": "Al",
+    "ShieldVisuals": "Kevlar",
+}
+
+# Eco mode material tweaks
+if P["eco_mode"]:
+    material_map["ShieldVisuals"] = "Kevlar"       # más ligero
+    material_map["MainThrusters"] = "Ti"           # supongamos carcasa Ti
+    material_map["RCSThrusters"] = "Ti"
+
+# -----------------------------
+# Mass calculation
+# -----------------------------
+def kg(m3, mat): return m3 * M.get(mat, 2700.0)
+
+def compute_mass_table():
+    items, total_mass = [], 0.0
+    for obj in doc.Objects:
+        if hasattr(obj, "Shape"):
+            mat = material_map.get(obj.Name, "Al")
+            vol = obj.Shape.Volume
+            mass = kg(vol, mat)
+            items.append((obj.Name, vol, mat, mass))
+            total_mass += mass
+    margin = total_mass * (P["mass_margin_pct"]/100.0)
+    return items, total_mass, margin, total_mass + margin
+
+items, m_total, m_margin, m_with_margin = compute_mass_table()
+MasterSolid.Label = f"MasterSolid (Mass:{m_total:.1f} kg, Margin {m_margin:.1f} kg, Total {m_with_margin:.1f} kg)"
+
+# -----------------------------
+# Finalize
+# -----------------------------
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.fitAll()
+except Exception:
+    pass

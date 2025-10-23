@@ -1,0 +1,463 @@
+#-*-coding:utf-8-*-
+import FreeCAD as App,FreeCADGui as Gui,Part,math
+
+# ---- Documento ----
+doc_name="CassiniUltra_HeavySatellite_RadiationShield_Ampliado"
+doc=App.ActiveDocument if App.ActiveDocument and App.ActiveDocument.Label==doc_name else App.newDocument(doc_name)
+doc=App.ActiveDocument
+
+# ---- Parámetros base (originales) ----
+P={"tank_len":9800.0,"tank_d":5200.0,"hull_t":55.0,"hull_outer_d":6000.0,"liner_t":22.0,"tps_front_R":3600.0,"tps_front_t":160.0,"tps_offset":680.0,"shoulder_len":1300.0,"shade_len":1900.0,"shade_w":1500.0,"shade_t":110.0,"shade_r":2800.0,"strut_d":300.0,"strut_r":2150.0,"bus_len":3800.0,"bus_outer_d":5800.0,"bus_inner_d":5000.0,"hga_R":2400.0,"hga_t":26.0,"hga_offset":720.0,"hga_mast_len":1600.0,"hga_mast_d":240.0,"rtg_box_l":1500.0,"rtg_box_w":820.0,"rtg_box_t":360.0,"rtg_arm_len":1450.0,"rtg_arm_d":260.0,"rtg_arm_offset_z":1200.0,"rtg_panel_t":60.0,"chamber_len":3000.0,"chamber_d":2500.0,"throat_d":820.0,"exit_d":5200.0,"nozzle_len":4200.0,"nozzle_mid_d":3000.0,"nozzle_mid_x":1200.0,"gimbal_ring_ro":2500.0,"gimbal_ring_ri":2200.0,"gimbal_ring_t":120.0,"aft_shield_len":1800.0,"aft_shield_d1":5000.0,"aft_shield_d2":3200.0,"mast_len":2800.0,"mast_d":200.0,"mast_tip_R":360.0,"mast_tip_t":14.0,"solar_len":5200.0,"solar_w":1800.0,"solar_t":95.0,"solar2_len":3600.0,"solar2_w":1200.0,"solar2_t":80.0,"solar_panel_angle":15.0,"rad_len":2800.0,"rad_w":1100.0,"rad_t":52.0,"rad_z":1600.0,"tank_dome_R":2200.0,"tank_dome_t":32.0,"bulkhead_t":56.0,"frame_ring_d":3800.0,"frame_ring_t":110.0,"frame_strut_d":320.0,"frame_plinth_t":70.0,"frame_step":700.0,"engine_bay_len":2400.0,"pump_len":1400.0,"pump_d":1100.0,"line_LH2_d":360.0,"line_OX_d":400.0,"line_clearance":340.0,"line_bend_R":520.0,"rcs_thr_d":420.0,"rcs_thr_len":820.0,"rcs_ring_R":3400.0,"rcs_count":8,"aux_thr_d":1000.0,"aux_thr_len":1600.0,"aux_thr_ring_R":3600.0,"aux_thr_count":8,"rad_shield_inner_d":6400.0,"rad_shield_t":160.0,"rad_shield_gap":80.0,"rad_shield_len":6000.0,"whipple_t":45.0,"whipple_gap":220.0,"payload_bay_len":2400.0,"payload_bay_d":5200.0,"inst_bay_len":1800.0,"inst_bay_d":4200.0,"bat_box_l":1400.0,"bat_box_w":900.0,"bat_box_t":480.0,"sga_R":800.0,"sga_t":16.0,"mag_boom_len":4200.0,"mag_boom_d":160.0,"star_boom_len":3200.0,"star_boom_d":140.0,"fin_len":1400.0,"fin_w":760.0,"fin_t":110.0,"ion_thr_d":300.0,"ion_thr_len":900.0,"ion_ring_R":3000.0,"ion_count":12,"hall_thr_d":600.0,"hall_thr_len":1200.0,"hall_arm_len":1600.0,"hall_arm_d":180.0,"robot_link_d":180.0,"robot_link_len":1200.0,"robot_count":2,"end_eff_d":260.0,"parker_shield_R":2400.0,"parker_shield_t":160.0,"micro_shield_t":18.0,"sensor_node_d":120.0,"sensor_node_count":6,"mass_margin_pct":8.0}
+
+# ---- Parámetros nuevos (alta complejidad, sin paneles solares) ----
+P.update({
+    # Docking y túnel/airlock mock
+    "cargo_ring_d": 5200.0, "cargo_ring_t": 160.0,
+    "cargo_sleeve_l": 3000.0, "cargo_sleeve_t": 80.0,
+    "docking_tunnel_d": 2600.0, "docking_tunnel_l": 2200.0, "docking_tunnel_t": 70.0,
+    "airlock_hatch_w": 1400.0, "airlock_hatch_h": 1600.0, "airlock_hatch_t": 90.0,
+    # Tanques criogénicos de Argón (cúpulas + MLI)
+    "argon_tank_count": 4, "argon_tank_d": 1800.0, "argon_tank_len": 2600.0, "argon_tank_wall": 20.0,
+    "argon_dome_R": 900.0, "argon_dome_t": 18.0, "argon_mli_t": 12.0, "argon_mli_layers": 12,
+    # Tanques de materiales (granulares) y pallets
+    "bulk_tank_count": 3, "bulk_tank_w": 1800.0, "bulk_tank_l": 2400.0, "bulk_tank_h": 1600.0, "bulk_tank_wall": 14.0,
+    "payload_pallet_count": 4, "payload_pallet_l": 1800.0, "payload_pallet_w": 1600.0, "payload_pallet_t": 120.0,
+    # Canisters de muestra
+    "sample_canister_count": 12, "sample_canister_d": 320.0, "sample_canister_len": 600.0, "sample_canister_wall": 8.0,
+    # Aisladores de vibración
+    "vib_iso_count": 16, "vib_iso_d": 220.0, "vib_iso_h": 140.0,
+    # Trusses internos y mallas (reticulados)
+    "truss_chord_d": 140.0, "truss_bay_len": 900.0, "truss_bay_count": 8,
+    "mesh_strand_d": 60.0, "mesh_panels_count": 6,
+    # Bastidor FEM-Ready extendido
+    "bulkhead_count": 6, "bulkhead_spread": 1400.0,
+    "frame_ring_count": 7, "stiffener_web_t": 26.0, "stiffener_web_w": 480.0, "frame_longeron_d": 240.0,
+    # Soportes radiales y arriostramientos
+    "radial_support_count": 12, "radial_support_d": 280.0,
+    "brace_count": 24, "brace_d": 180.0,
+    # Racks avionica y baterías
+    "avionics_rack_levels": 4, "avionics_rack_w": 1200.0, "avionics_rack_l": 1800.0, "avionics_rack_t": 140.0,
+    "battery_pack_count": 6, "battery_pack_l": 900.0, "battery_pack_w": 600.0, "battery_pack_t": 320.0,
+    # Cableado, bus de potencia, distribuciones
+    "cable_tray_w": 280.0, "cable_tray_t": 70.0, "cable_tray_len": 3600.0, "cable_tray_count": 6,
+    "power_bus_bar_w": 80.0, "power_bus_bar_t": 20.0, "power_bus_bar_len": 2800.0,
+    # Líneas de proceso: redundancia y árbol de válvulas
+    "proc_line_d": 200.0, "proc_bend_R": 460.0,
+    "proc_valve_d": 280.0, "proc_valve_len": 420.0,
+    "proc_filter_d": 260.0, "proc_filter_len": 560.0,
+    "manifold_d": 480.0, "manifold_len": 1200.0,
+    "regulator_d": 240.0, "regulator_len": 460.0, "regulator_count": 6,
+    "xfer_pump_d": 560.0, "xfer_pump_len": 1200.0, "xfer_pump_mount_w": 980.0, "xfer_pump_mount_t": 90.0,
+    # Radiadores reubicados + louver térmico + heat pipes
+    "rad_panel_count": 6, "rad_panel_gap": 280.0,
+    "louver_panel_l": 1400.0, "louver_panel_w": 1000.0, "louver_panel_t": 80.0, "louver_count": 8, "louver_gap": 60.0,
+    "heat_pipe_d": 80.0, "heat_pipe_len": 2200.0, "heat_pipe_count": 16,
+    # Whipple extra (multicapas)
+    "extra_shield_t": 90.0, "extra_shield_len": 2600.0, "whipple_layers": 4, "whipple_gap_extra": 180.0,
+    # Sensórica distribuida
+    "sensor_proc_count": 16, "sensor_proc_d": 140.0, "sensor_proc_len": 200.0,
+    "accel_sensor_count": 12, "accel_sensor_box": 120.0
+})
+
+# ---- Materiales ----
+M={"CFRP":1600.0,"Al":2700.0,"Ti":4500.0,"Inconel":8200.0,"Ta":16600.0,"Cu":8960.0,"Kevlar":1440.0}
+
+# ---- Ejes y utilidades ----
+X_AXIS,Y_AXIS,Z_AXIS=App.Vector(1,0,0),App.Vector(0,1,0),App.Vector(0,0,1)
+rot_to_x=lambda:App.Rotation(Y_AXIS,90)
+
+def add_obj(s,n,rgb=None):
+    o=doc.addObject("Part::Feature",n);o.Shape=s
+    if rgb and hasattr(o,"ViewObject"):o.ViewObject.ShapeColor=rgb
+    return o
+
+def cyl_x(d,L,cx=0,cy=0,cz=0):
+    s=Part.makeCylinder(d/2.0,L)
+    s.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x())
+    return s
+
+def cone_x(d1,d2,L,cx=0,cy=0,cz=0):
+    s=Part.makeCone(d1/2.0,d2/2.0,L)
+    s.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x())
+    return s
+
+def box_at(l,w,t,x,y,z):
+    b=Part.makeBox(l,w,t)
+    b.translate(App.Vector(x,y,z))
+    return b
+
+def pipe_x(d,L,cx,cy,cz):
+    return cyl_x(d,L,cx,cy,cz)
+
+# ---- Estructura original principal ----
+tank_cx=0.0
+tank=cyl_x(P["tank_d"],P["tank_len"],cx=tank_cx)
+liner=cyl_x(P["tank_d"]-2*P["liner_t"],P["tank_len"]-2*P["liner_t"],cx=tank_cx)
+hull_outer=cyl_x(P["hull_outer_d"],P["tank_len"],cx=tank_cx).cut(tank)
+
+R,tps_t=P["tps_front_R"],P["tps_front_t"]
+cap_center_x=tank_cx+P["tank_len"]/2.0+P["tps_offset"]
+sphere_out,sphere_in=Part.makeSphere(R),Part.makeSphere(R-tps_t)
+sphere_out.Placement=sphere_in.Placement=App.Placement(App.Vector(cap_center_x,0,0),App.Rotation())
+tps_box=Part.makeBox(2*R,4*R,4*R,App.Vector(cap_center_x-R,-2*R,-2*R))
+tps_front_shell=sphere_out.common(tps_box).cut(sphere_in.common(tps_box))
+
+shoulder_cx=cap_center_x-P["shoulder_len"]/2.0
+shoulder=cone_x(2*R,P["hull_outer_d"],P["shoulder_len"],cx=shoulder_cx)
+
+parker_disc=cyl_x(P["parker_shield_R"]*2,200.0,cx=cap_center_x+P["tps_offset"]+200.0)
+
+r_shield_outer=cyl_x(P["rad_shield_inner_d"]+2*P["rad_shield_t"],P["rad_shield_len"],cx=tank_cx)
+r_shield_inner=cyl_x(P["rad_shield_inner_d"],P["rad_shield_len"],cx=tank_cx)
+rad_shield_shell=r_shield_outer.cut(r_shield_inner)
+
+w_out=cyl_x(P["tank_dome_R"]+P["whipple_gap"],P["aft_shield_len"],cx=tank_cx)
+w_in=cyl_x(P["tank_dome_R"],P["aft_shield_len"],cx=tank_cx)
+whipple_shell=w_out.cut(w_in)
+
+frame_ring=cyl_x(P["frame_ring_d"],P["frame_ring_t"],cx=tank_cx-P["tank_len"]/4.0)
+
+bus_shell=cyl_x(P["bus_outer_d"],P["bus_len"],cx=tank_cx).cut(cyl_x(P["bus_inner_d"],P["bus_len"]-2*P["hull_t"],cx=tank_cx))
+
+struct_group_1=tank.fuse(hull_outer)
+struct_group_2=struct_group_1.fuse(liner)
+struct_group_3=struct_group_2.fuse(shoulder).fuse(tps_front_shell)
+struct_group_4=struct_group_3.fuse(rad_shield_shell).fuse(whipple_shell).fuse(frame_ring)
+MasterSolidShape=struct_group_4.fuse(bus_shell)
+MasterSolid=add_obj(MasterSolidShape,"MasterSolid",(0.12,0.28,0.50))
+
+# ---- Bastidor FEM: mamparos y aros extra ----
+bulkheads=[]
+for i in range(P["bulkhead_count"]):
+    x = tank_cx - P["tank_len"]/2.0 + (i+1)*P["bulkhead_spread"]
+    bulkheads.append(cyl_x(P["bus_inner_d"], P["bulkhead_t"], cx=x))
+Bulkheads=add_obj(Part.makeCompound(bulkheads),"Bulkheads",(0.35,0.4,0.55))
+
+frame_rings=[]
+for i in range(P["frame_ring_count"]):
+    x = tank_cx - P["tank_len"]/2.0 + (i+1)*(P["tank_len"]/float(P["frame_ring_count"]+1))
+    frame_rings.append(cyl_x(P["frame_ring_d"], P["frame_ring_t"], cx=x))
+FrameRings=add_obj(Part.makeCompound(frame_rings),"FrameRings",(0.3,0.35,0.5))
+
+# ---- Largueros y webs
+longerons=[]
+for i in range(6):
+    y = (-P["bus_inner_d"]/2.0 + (i+1)*(P["bus_inner_d"]/7.0))
+    longerons.append(pipe_x(P["frame_longeron_d"], P["tank_len"]*0.78, tank_cx-P["tank_len"]*0.39, y, 0))
+Longerons=add_obj(Part.makeCompound(longerons),"Longerons",(0.3,0.35,0.5))
+
+webs=[]
+for i in range(8):
+    x = tank_cx - P["tank_len"]/2.0 + (i+1)*(P["tank_len"]/9.0)
+    webs.append(box_at(P["stiffener_web_w"], P["stiffener_web_t"], P["bus_inner_d"]*0.92, x-P["stiffener_web_w"]/2.0, -P["stiffener_web_t"]/2.0, -P["bus_inner_d"]*0.92/2.0))
+StiffenerWebs=add_obj(Part.makeCompound(webs),"StiffenerWebs",(0.28,0.32,0.48))
+
+# ---- Truss interno en bay (bay reticulado)
+truss_members=[]
+bay_start = tank_cx - P["bus_len"]/2.0
+for bay in range(P["truss_bay_count"]):
+    x0 = bay_start + bay*P["truss_bay_len"]
+    x1 = x0 + P["truss_bay_len"]
+    # montantes
+    truss_members.append(pipe_x(P["truss_chord_d"], P["bus_inner_d"], x0, -P["bus_inner_d"]/2.0, 0))
+    truss_members.append(pipe_x(P["truss_chord_d"], P["bus_inner_d"], x1, -P["bus_inner_d"]/2.0, 0))
+    # cordón superior e inferior
+    truss_members.append(box_at(P["truss_bay_len"], P["truss_chord_d"], P["truss_chord_d"], x0, -P["bus_inner_d"]/2.0, P["bus_inner_d"]/2.0 - P["truss_chord_d"]))
+    truss_members.append(box_at(P["truss_bay_len"], P["truss_chord_d"], P["truss_chord_d"], x0, -P["bus_inner_d"]/2.0, -P["bus_inner_d"]/2.0))
+Truss=add_obj(Part.makeCompound(truss_members),"BayTruss",(0.4,0.42,0.48))
+
+# ---- Mesh panels (malla protectora interior)
+mesh_panels=[]
+for i in range(P["mesh_panels_count"]):
+    x = tank_cx - P["tank_len"]/2.0 + (i+1)*(P["tank_len"]/float(P["mesh_panels_count"]+1))
+    mesh_panels.append(box_at(P["truss_bay_len"], P["bus_inner_d"]*0.7, P["mesh_strand_d"], x, -P["bus_inner_d"]*0.35, -P["mesh_strand_d"]/2.0))
+MeshPanels=add_obj(Part.makeCompound(mesh_panels),"MeshPanels",(0.2,0.25,0.3))
+
+# ---- Antena HGA (original)
+hga_center_x=cap_center_x-P["hga_offset"]
+hga_outer=Part.makeSphere(P["hga_R"]); hga_inner=Part.makeSphere(P["hga_R"]-P["hga_t"])
+hga_outer.Placement=hga_inner.Placement=App.Placement(App.Vector(hga_center_x,0,0),App.Rotation())
+hga_cut_box=Part.makeBox(2*P["hga_R"],4*P["hga_R"],4*P["hga_R"],App.Vector(hga_center_x-P["hga_R"],-2*P["hga_R"],-2*P["hga_R"]))
+hga_dish=hga_outer.common(hga_cut_box).cut(hga_inner.common(hga_cut_box))
+hga_mast=pipe_x(P["hga_mast_d"],P["hga_mast_len"],hga_center_x-P["hga_mast_len"]/2.0,0,0)
+HGA=add_obj(Part.makeCompound([hga_dish,hga_mast]),"HGA_Assembly",(0.9,0.9,0.95))
+
+# ---- RTG (original)
+rtg_cx=tank_cx-P["rtg_arm_offset_z"]
+rtg_box=box_at(P["rtg_box_l"],P["rtg_box_w"],P["rtg_box_t"],rtg_cx,0,0)
+rtg_arm=pipe_x(P["rtg_arm_d"],P["rtg_arm_len"],rtg_cx-P["rtg_arm_len"]/2.0,0,0)
+RTG=add_obj(Part.makeCompound([rtg_box,rtg_arm]),"RTG_Assembly",(0.85,0.8,0.2))
+
+# ---- Radiadores reubicados
+rad_x=tank_cx+P["rad_z"]
+rad_panels=[]
+for i in range(P["rad_panel_count"]):
+    y = (-((P["rad_panel_count"]/2.0)-0.5)*P["rad_panel_gap"]) + i*P["rad_panel_gap"]
+    rad_panels.append(box_at(P["rad_len"],P["rad_w"],P["rad_t"],rad_x,y,0))
+Radiators=add_obj(Part.makeCompound(rad_panels),"Radiators",(0.25,0.35,0.5))
+
+# ---- Louver térmico (panel con lamas)
+louvers=[]
+louver_panel = box_at(P["louver_panel_l"], P["louver_panel_w"], P["louver_panel_t"], tank_cx + P["bus_len"]/2.0, -P["louver_panel_w"]/2.0, -P["louver_panel_t"]/2.0)
+for i in range(P["louver_count"]):
+    y = -P["louver_panel_w"]/2.0 + 40.0 + i*(P["louver_gap"])
+    louvers.append(box_at(P["louver_panel_l"]*0.9, 40.0, 12.0, tank_cx + P["bus_len"]/2.0, y, 0))
+ThermalLouver=add_obj(Part.makeCompound([louver_panel]+louvers),"ThermalLouver",(0.6,0.6,0.65))
+
+# ---- Heat-pipes (red)
+heat_pipes=[]
+for i in range(P["heat_pipe_count"]):
+    y = (-P["bus_inner_d"]/2.0 + (i+1)*(P["bus_inner_d"]/(P["heat_pipe_count"]+1)))
+    heat_pipes.append(pipe_x(P["heat_pipe_d"], P["heat_pipe_len"], tank_cx - P["heat_pipe_len"]/2.0, y, P["bus_inner_d"]/3.0))
+HeatPipes=add_obj(Part.makeCompound(heat_pipes),"HeatPipes",(0.7,0.6,0.5))
+
+# ---- Booms (original)
+mag_boom=pipe_x(P["mag_boom_d"],P["mag_boom_len"],tank_cx+P["tank_len"]/2.0,0,0)
+star_boom=pipe_x(P["star_boom_d"],P["star_boom_len"],tank_cx+P["tank_len"]/2.0,0,P["star_boom_d"])
+Booms=add_obj(Part.makeCompound([mag_boom,star_boom]),"Booms",(0.6,0.6,0.7))
+
+# ---- Robots (original)
+robots=[cyl_x(P["end_eff_d"],200.0,P["robot_link_len"]/2.0,0,0) if r%2==0 else pipe_x(P["robot_link_d"],P["robot_link_len"],tank_cx,0,(r-0.5)*P["robot_link_len"]) for r in range(P["robot_count"]*2)]
+Robots=add_obj(Part.makeCompound(robots),"Robots",(0.4,0.4,0.5))
+
+# ---- Thrusters (original)
+def ring_positions(R,n):
+    return[(tank_cx+R*math.cos(math.radians(i*360.0/n)),R*math.sin(math.radians(i*360.0/n))) for i in range(n)]
+
+thr_ion=[pipe_x(P["ion_thr_d"],P["ion_thr_len"],x,y,0) for (x,y) in ring_positions(P["ion_ring_R"],P["ion_count"])]
+IonThrusters=add_obj(Part.makeCompound(thr_ion),"IonThrusters",(0.3,0.3,0.35))
+
+thr_aux=[pipe_x(P["aux_thr_d"],P["aux_thr_len"],tank_cx-x,y,0) for (x,y) in ring_positions(P["aux_thr_ring_R"],P["aux_thr_count"])]
+AuxThrusters=add_obj(Part.makeCompound(thr_aux),"AuxThrusters",(0.35,0.35,0.4))
+
+thr_rcs=[pipe_x(P["rcs_thr_d"],P["rcs_thr_len"],x,y,0) for (x,y) in ring_positions(P["rcs_ring_R"],P["rcs_count"])]
+RCSThrusters=add_obj(Part.makeCompound(thr_rcs),"RCSThrusters",(0.3,0.3,0.35))
+
+# ---- Bodega de carga / instrumentos (original)
+payload_bay=cyl_x(P["payload_bay_d"],P["payload_bay_len"],cx=tank_cx)
+inst_pallet=box_at(P["inst_bay_len"],P["inst_bay_d"],200.0,tank_cx,0,0)
+PayloadBay=add_obj(Part.makeCompound([payload_bay,inst_pallet]),"PayloadBay",(0.7,0.7,0.75))
+
+# ---- Túnel de docking y airlock mock
+tunnel_outer=cyl_x(P["docking_tunnel_d"], P["docking_tunnel_l"], cx=tank_cx+P["payload_bay_len"]/2.0+P["docking_tunnel_l"]/2.0)
+tunnel_inner=cyl_x(P["docking_tunnel_d"]-2.0*P["docking_tunnel_t"], P["docking_tunnel_l"], cx=tank_cx+P["payload_bay_len"]/2.0+P["docking_tunnel_l"]/2.0)
+DockingTunnel=add_obj(tunnel_outer.cut(tunnel_inner),"DockingTunnel",(0.75,0.75,0.8))
+AirlockHatch=add_obj(box_at(P["airlock_hatch_w"],P["airlock_hatch_h"],P["airlock_hatch_t"], tank_cx+P["payload_bay_len"]/2.0+P["docking_tunnel_l"], -P["airlock_hatch_w"]/2.0, -P["airlock_hatch_h"]/2.0),"AirlockHatch",(0.8,0.8,0.85))
+
+# ---- Interfaz de carga: manguito + anillo docking
+sleeve_outer=cyl_x(P["cargo_ring_d"], P["cargo_sleeve_l"], cx=tank_cx)
+sleeve_inner=cyl_x(P["cargo_ring_d"]-2.0*P["cargo_sleeve_t"], P["cargo_sleeve_l"], cx=tank_cx)
+sleeve_shell=sleeve_outer.cut(sleeve_inner)
+ring_outer=cyl_x(P["cargo_ring_d"], P["cargo_ring_t"], cx=tank_cx + P["cargo_sleeve_l"]/2.0)
+ring_inner=cyl_x(P["cargo_ring_d"]-2.0*P["cargo_sleeve_t"], P["cargo_ring_t"], cx=tank_cx + P["cargo_sleeve_l"]/2.0)
+ring_shell=ring_outer.cut(ring_inner)
+CargoInterface=add_obj(Part.makeCompound([sleeve_shell, ring_shell]), "CargoInterface",(0.7,0.7,0.75))
+
+# ---- Tanques criogénicos de Argón con cúpulas y MLI
+argon_tanks=[]
+for i in range(P["argon_tank_count"]):
+    y = (-P["bus_inner_d"]/2.0 + (i+1)*(P["bus_inner_d"]/(P["argon_tank_count"]+1)))
+    cx = tank_cx + P["bus_len"]/4.0
+    # cilindro
+    outer = cyl_x(P["argon_tank_d"], P["argon_tank_len"], cx=cx, cy=y, cz=0)
+    inner = cyl_x(P["argon_tank_d"]-2.0*P["argon_tank_wall"], P["argon_tank_len"]-2.0*P["argon_tank_wall"], cx=cx, cy=y, cz=0)
+    shell = outer.cut(inner)
+    # cúpulas
+    dome_front = cone_x(P["argon_dome_R"]*2, P["argon_tank_d"], P["argon_dome_R"], cx=cx - P["argon_tank_len"]/2.0, cy=y, cz=0)
+    dome_rear  = cone_x(P["argon_tank_d"], P["argon_dome_R"]*2, P["argon_dome_R"], cx=cx + P["argon_tank_len"]/2.0 - P["argon_dome_R"], cy=y, cz=0)
+    # MLI como carcasa delgada
+    mli = cyl_x(P["argon_tank_d"]+2.0*P["argon_mli_t"], P["argon_tank_len"], cx=cx, cy=y, cz=0).cut(outer)
+    argon_tanks.append(Part.makeCompound([shell,dome_front,dome_rear,mli]))
+ArgonTanks=add_obj(Part.makeCompound(argon_tanks),"ArgonTanks",(0.6,0.75,0.9))
+
+# ---- Bins de materiales y pallets de payload
+bulk_bins=[]
+for i in range(P["bulk_tank_count"]):
+    x = tank_cx - P["bus_len"]/4.0 + i*(P["bulk_tank_l"] + 100.0)
+    outer = box_at(P["bulk_tank_l"], P["bulk_tank_w"], P["bulk_tank_h"], x, -P["bulk_tank_w"]/2.0, -P["bulk_tank_h"]/2.0)
+    inner = box_at(P["bulk_tank_l"]-2.0*P["bulk_tank_wall"], P["bulk_tank_w"]-2.0*P["bulk_tank_wall"], P["bulk_tank_h"]-2.0*P["bulk_tank_wall"],
+                   x+P["bulk_tank_wall"], -P["bulk_tank_w"]/2.0+P["bulk_tank_wall"], -P["bulk_tank_h"]/2.0+P["bulk_tank_wall"])
+    bulk_bins.append(outer.cut(inner))
+BulkBins=add_obj(Part.makeCompound(bulk_bins),"BulkBins",(0.65,0.6,0.5))
+
+pallets=[]
+for i in range(P["payload_pallet_count"]):
+    x = tank_cx - P["payload_pallet_l"]/2.0 + i*(P["payload_pallet_l"]+80.0)
+    pallets.append(box_at(P["payload_pallet_l"], P["payload_pallet_w"], P["payload_pallet_t"], x, -P["payload_pallet_w"]/2.0, -P["payload_pallet_t"]/2.0))
+PayloadPallets=add_obj(Part.makeCompound(pallets),"PayloadPallets",(0.55,0.5,0.45))
+
+# ---- Canisters de muestra
+canisters=[]
+for i in range(P["sample_canister_count"]):
+    y = (-P["bus_inner_d"]/2.0 + (i+1)*(P["bus_inner_d"]/(P["sample_canister_count"]+1)))
+    outer = cyl_x(P["sample_canister_d"], P["sample_canister_len"], cx=tank_cx - 600.0, cy=y, cz=-P["sample_canister_len"]/2.0)
+    inner = cyl_x(P["sample_canister_d"]-2.0*P["sample_canister_wall"], P["sample_canister_len"]-2.0*P["sample_canister_wall"], cx=tank_cx - 600.0, cy=y, cz=-P["sample_canister_len"]/2.0)
+    canisters.append(outer.cut(inner))
+SampleCanisters=add_obj(Part.makeCompound(canisters),"SampleCanisters",(0.7,0.6,0.55))
+
+# ---- Aisladores de vibración (pads bajo pallets y bombas)
+isolators=[]
+for i in range(P["vib_iso_count"]):
+    y = (-P["payload_pallet_w"]/2.0 + (i%4)*P["payload_pallet_w"]/3.0)
+    x = tank_cx - P["bus_len"]/4.0 + (i//4)*280.0
+    isolators.append(cyl_x(P["vib_iso_d"], P["vib_iso_h"], cx=x, cy=y, cz=-P["vib_iso_h"]/2.0))
+VibrationIsolators=add_obj(Part.makeCompound(isolators),"VibrationIsolators",(0.35,0.35,0.4))
+
+# ---- Manifold, líneas redundantes, válvulas, filtros y reguladores
+manifold_main = pipe_x(P["manifold_d"], P["manifold_len"], tank_cx - P["manifold_len"]/2.0, 0, P["bus_inner_d"]/4.0)
+ProcManifold=add_obj(manifold_main,"ProcessManifold",(0.5,0.5,0.55))
+
+proc_lines=[]
+valves=[];filters=[];regulators=[]
+for i in range(P["argon_tank_count"]):
+    y = (-P["bus_inner_d"]/2.0 + (i+1)*(P["bus_inner_d"]/(P["argon_tank_count"]+1)))
+    # línea desde tanque -> manifold
+    proc_lines.append(pipe_x(P["proc_line_d"], abs(y), tank_cx, y/2.0, P["bus_inner_d"]/4.0))
+    # redundancia paralela
+    proc_lines.append(pipe_x(P["proc_line_d"], abs(y), tank_cx+180.0, y/2.0, P["bus_inner_d"]/4.0+60.0))
+    # válvula y filtro
+    x = tank_cx - P["manifold_len"]/2.0 + (i+1)*P["manifold_len"]/float(P["argon_tank_count"]+1)
+    valves.append(pipe_x(P["proc_valve_d"], P["proc_valve_len"], x-P["proc_valve_len"]/2.0, 0, P["bus_inner_d"]/4.0))
+    filters.append(pipe_x(P["proc_filter_d"], P["proc_filter_len"], x-P["proc_filter_len"]/2.0, 0, P["bus_inner_d"]/4.0+P["proc_filter_d"]))
+# reguladores distribuidos
+for i in range(P["regulator_count"]):
+    x = tank_cx - P["tank_len"]/2.0 + (i+1)*(P["tank_len"]/float(P["regulator_count"]+1))
+    regulators.append(pipe_x(P["regulator_d"], P["regulator_len"], x-P["regulator_len"]/2.0, 0, P["bus_inner_d"]/4.0 + 180.0))
+ProcessLines=add_obj(Part.makeCompound(proc_lines),"ProcessLines",(0.55,0.55,0.6))
+ProcessValves=add_obj(Part.makeCompound(valves),"ProcessValves",(0.6,0.45,0.3))
+ProcessFilters=add_obj(Part.makeCompound(filters),"ProcessFilters",(0.45,0.6,0.45))
+ProcessRegulators=add_obj(Part.makeCompound(regulators),"ProcessRegulators",(0.45,0.5,0.6))
+
+# ---- Bombas de transferencia (doble) y monturas
+pump_base_x=tank_cx + P["bus_len"]/2.0 - 640.0
+xfer_pumps=[];mounts=[]
+for i in range(2):
+    y = (-P["bus_inner_d"]/3.0) + i*(2*P["bus_inner_d"]/3.0)
+    xfer_pumps.append(pipe_x(P["xfer_pump_d"], P["xfer_pump_len"], pump_base_x-P["xfer_pump_len"]/2.0, y, 0))
+    mounts.append(box_at(P["xfer_pump_mount_w"], P["xfer_pump_mount_t"], P["xfer_pump_mount_w"]/3.0,
+                         pump_base_x-P["xfer_pump_mount_w"]/2.0, y-P["xfer_pump_mount_t"]/2.0, -P["xfer_pump_mount_w"]/6.0))
+TransferPumps=add_obj(Part.makeCompound(xfer_pumps),"TransferPumps",(0.5,0.5,0.55))
+PumpMounts=add_obj(Part.makeCompound(mounts),"PumpMounts",(0.4,0.4,0.45))
+
+# ---- Soportes radiales y arriostramientos (braces)
+radial_supports=[]
+for i in range(P["radial_support_count"]):
+    ang = i*360.0/P["radial_support_count"]
+    y = (P["bus_outer_d"]/2.0)*math.sin(math.radians(ang))
+    z = (P["bus_outer_d"]/2.0)*math.cos(math.radians(ang))
+    radial_supports.append(pipe_x(P["radial_support_d"], P["bus_len"], tank_cx-P["bus_len"]/2.0, y, z))
+RadialSupports=add_obj(Part.makeCompound(radial_supports),"RadialSupports",(0.3,0.3,0.35))
+
+braces=[]
+for i in range(P["brace_count"]):
+    y = (-P["bus_inner_d"]/2.0 + (i%6+1)*(P["bus_inner_d"]/7.0))
+    z = -P["bus_inner_d"]/3.0 + (i%4)*P["bus_inner_d"]/6.0
+    braces.append(pipe_x(P["brace_d"], P["bus_len"]*0.5, tank_cx-P["bus_len"]/4.0, y, z))
+Braces=add_obj(Part.makeCompound(braces),"Braces",(0.35,0.35,0.4))
+
+# ---- Racks de aviónica y packs de baterías
+racks=[]
+for lvl in range(P["avionics_rack_levels"]):
+    z = -P["bus_inner_d"]/3.0 + lvl*(P["bus_inner_d"]/3.0)
+    racks.append(box_at(P["avionics_rack_l"], P["avionics_rack_w"], P["avionics_rack_t"],
+                        tank_cx - P["avionics_rack_l"]/2.0, -P["avionics_rack_w"]/2.0, z-P["avionics_rack_t"]/2.0))
+AvionicsRacks=add_obj(Part.makeCompound(racks),"AvionicsRacks",(0.55,0.5,0.45))
+
+batteries=[]
+for i in range(P["battery_pack_count"]):
+    x = tank_cx - P["bus_len"]/3.0 + (i%3)*P["battery_pack_l"]*1.1
+    z = -P["bus_inner_d"]/4.0 + (i//3)*P["battery_pack_t"]*1.2
+    batteries.append(box_at(P["battery_pack_l"], P["battery_pack_w"], P["battery_pack_t"], x, -P["battery_pack_w"]/2.0, z-P["battery_pack_t"]/2.0))
+BatteryPacks=add_obj(Part.makeCompound(batteries),"BatteryPacks",(0.45,0.45,0.5))
+
+# ---- Bus de potencia (barras colectoras)
+power_bars=[]
+for i in range(2):
+    y = -P["bus_inner_d"]/2.0 + (i+1)*P["bus_inner_d"]/3.0
+    power_bars.append(box_at(P["power_bus_bar_len"], P["power_bus_bar_w"], P["power_bus_bar_t"],
+                             tank_cx - P["power_bus_bar_len"]/2.0, y - P["power_bus_bar_w"]/2.0, P["bus_inner_d"]/4.0))
+PowerBus=add_obj(Part.makeCompound(power_bars),"PowerBus",(0.9,0.6,0.2))
+
+# ---- Bandejas de cableado
+cable_trays=[]
+for i in range(P["cable_tray_count"]):
+    y = (-P["bus_inner_d"]/2.0 + (i+1)*(P["bus_inner_d"]/(P["cable_tray_count"]+1)))
+    cable_trays.append(box_at(P["cable_tray_len"], P["cable_tray_w"], P["cable_tray_t"],
+                              tank_cx - P["cable_tray_len"]/2.0, y - P["cable_tray_w"]/2.0, P["bus_inner_d"]/4.0))
+CableTrays=add_obj(Part.makeCompound(cable_trays),"CableTrays",(0.5,0.45,0.4))
+
+# ---- Sensores periféricos (original)
+sensor_nodes=[box_at(120.0,120.0,60.0,
+    tank_cx+(P["bus_len"]/2.0+200.0)*math.cos(math.radians(i*360.0/P["sensor_node_count"])),
+    (P["bus_outer_d"]/2.0+150.0)*math.sin(math.radians(i*360.0/P["sensor_node_count"])),0) for i in range(P["sensor_node_count"])]
+Sensors=add_obj(Part.makeCompound(sensor_nodes),"Sensors",(0.9,0.2,0.2))
+
+# ---- Sensórica de proceso y acelerometría
+proc_sensors=[]
+for i in range(P["sensor_proc_count"]):
+    x = tank_cx - P["tank_len"]/2.0 + (i+1)*(P["tank_len"]/float(P["sensor_proc_count"]+1))
+    proc_sensors.append(pipe_x(P["sensor_proc_d"], P["sensor_proc_len"], x-P["sensor_proc_len"]/2.0, 0, P["bus_inner_d"]/4.0 + 220.0))
+ProcessSensors=add_obj(Part.makeCompound(proc_sensors),"ProcessSensors",(0.9,0.2,0.2))
+
+accels=[]
+for i in range(P["accel_sensor_count"]):
+    x = tank_cx - P["bus_len"]/2.0 + (i+1)*(P["bus_len"]/float(P["accel_sensor_count"]+1))
+    accels.append(box_at(P["accel_sensor_box"], P["accel_sensor_box"], P["accel_sensor_box"],
+                         x, -P["accel_sensor_box"]/2.0, -P["accel_sensor_box"]/2.0))
+AccelSensors=add_obj(Part.makeCompound(accels),"AccelSensors",(0.9,0.3,0.3))
+
+# ---- Motor (original)
+engine_nozzle=cone_x(P["throat_d"],P["exit_d"],P["nozzle_len"],cx=tank_cx-P["tank_len"]/2.0)
+engine_bay=cyl_x(P["pump_d"],P["engine_bay_len"],cx=tank_cx-P["tank_len"]/2.0)
+Engine=add_obj(Part.makeCompound([engine_nozzle,engine_bay]),"EngineBay",(0.55,0.55,0.6))
+
+# ---- Escudo tipo Parker (original)
+ParkerShield=add_obj(parker_disc,"ParkerShield",(0.15,0.15,0.2))
+
+# ---- Whipple extra (multicapas internas)
+extra_layers=[]
+for i in range(P["whipple_layers"]):
+    x = tank_cx - P["tank_len"]/3.0 + i*(P["extra_shield_len"] + P["whipple_gap_extra"])
+    plate = box_at(P["extra_shield_len"], P["bus_inner_d"]*0.85, P["extra_shield_t"],
+                   x, -P["bus_inner_d"]*0.85/2.0, -P["extra_shield_t"]/2.0)
+    extra_layers.append(plate)
+ExtraWhipple=add_obj(Part.makeCompound(extra_layers),"ExtraWhipple",(0.2,0.2,0.25))
+
+# ---- Materiales por objeto ----
+material_map={
+    "MasterSolid":"Al","Bulkheads":"Al","FrameRings":"Al","Longerons":"Ti","StiffenerWebs":"Al","BayTruss":"Ti","MeshPanels":"Kevlar",
+    "HGA_Assembly":"Al","RTG_Assembly":"Ti","Radiators":"CFRP","ThermalLouver":"Al","HeatPipes":"Cu",
+    "Booms":"CFRP","Robots":"Ti","IonThrusters":"Inconel","AuxThrusters":"Inconel","RCSThrusters":"Ti",
+    "PayloadBay":"Al","DockingTunnel":"Al","AirlockHatch":"Ti","CargoInterface":"Al",
+    "ArgonTanks":"Ti","BulkBins":"Al","PayloadPallets":"Al","SampleCanisters":"Ti","VibrationIsolators":"Kevlar",
+    "ProcessManifold":"Ti","ProcessLines":"Ti","ProcessValves":"Ti","ProcessFilters":"Al","ProcessRegulators":"Ti",
+    "TransferPumps":"Inconel","PumpMounts":"Al","RadialSupports":"Ti","Braces":"Ti",
+    "AvionicsRacks":"Al","BatteryPacks":"Al","PowerBus":"Cu","CableTrays":"Al",
+    "Sensors":"Cu","ProcessSensors":"Cu","AccelSensors":"Cu",
+    "EngineBay":"Inconel","ParkerShield":"Ta","ExtraWhipple":"Kevlar"
+}
+
+# ---- Cálculo de masas ----
+def kg(m3,mat): return m3*M.get(mat,2700.0)
+
+def compute_mass_table():
+    items=[];total_mass=0.0
+    for obj in doc.Objects:
+        if hasattr(obj,"Shape"):
+            mat=material_map.get(obj.Name,"Al")
+            vol=obj.Shape.Volume
+            mass=kg(vol,mat)
+            items.append((obj.Name,vol,mat,mass))
+            total_mass += mass
+    margin=total_mass*(P["mass_margin_pct"]/100.0)
+    return items,total_mass,margin,total_mass+margin
+
+items,m_total,m_margin,m_with_margin=compute_mass_table()
+MasterSolid.Label=f"MasterSolid (Mass:{m_total:.1f} kg, Margin {m_margin:.1f} kg, Total {m_with_margin:.1f} kg)"
+
+# ---- Recompute y encuadre ----
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.fitAll()
+except Exception:
+    pass

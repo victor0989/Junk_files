@@ -1,0 +1,146 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+doc_name = "ArgonLander_DomeCluster_Base"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# ---------------- PARÁMETROS ----------------
+P = {
+    # Cuerpo principal y cúpula
+    "bus_d": 4400, "bus_len": 7000, "bus_t": 90,
+    "dome_R": 2400, "dome_t": 50, "dome_cx_offset": +200,
+
+    # Tanques laterales
+    "side_tank_R": 1700, "side_tank_offset_y": 3900, "side_tank_cx": +700,
+
+    # Patas y pads
+    "leg_n": 4, "leg_len": 3000, "leg_d": 280,
+    "leg_base_cx": +200, "leg_base_R": 2400,
+    "pad_d": 1800, "pad_t": 140, "pad_drop": 2600,
+
+    # Cluster de motores en la base (polo inferior)
+    "core_throat": 1400, "core_exit": 3000, "core_len": 2600,
+    "main_count": 6, "main_throat": 900, "main_exit": 2000, "main_len": 2000, "main_ring_R": 2200,
+    "aux_count": 12, "aux_d1": 400, "aux_d2": 240, "aux_len": 1000, "aux_ring_R": 3200,
+
+    # Anillo estructural de cola
+    "engine_ring_d": 5000, "engine_ring_t": 200,
+
+    # Colores
+    "mint": (0.70, 0.95, 0.85), "dark": (0.35, 0.55, 0.50), "accent": (0.55, 0.85, 0.75)
+}
+
+# ---------------- UTILIDADES ----------------
+X_AXIS=App.Vector(1,0,0); Y_AXIS=App.Vector(0,1,0)
+def rot_to_x(): return App.Rotation(Y_AXIS,90)
+
+def add_obj(shape,label,color=None):
+    o=doc.addObject("Part::Feature",label); o.Shape=shape
+    if color and hasattr(o,"ViewObject"): o.ViewObject.ShapeColor=color
+    return o
+
+def is_valid(shape): return (shape is not None) and (not shape.isNull())
+
+def fuse_many(items):
+    seq=[s.Shape if hasattr(s,"Shape") else s for s in items if is_valid(s.Shape if hasattr(s,"Shape") else s)]
+    if not seq: return None
+    u=seq[0]
+    for sh in seq[1:]:
+        try: u=u.fuse(sh)
+        except: pass
+    return u
+
+def cyl_x(d,L,cx=0,cy=0,cz=0):
+    c=Part.makeCylinder(d/2.0,L)
+    c.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x())
+    return c
+
+def cone_x(d1,d2,L,cx=0,cy=0,cz=0):
+    c=Part.makeCone(d1/2.0,d2/2.0,L)
+    c.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x())
+    return c
+
+def sphere_at(R,cx=0,cy=0,cz=0):
+    s=Part.makeSphere(R)
+    s.Placement=App.Placement(App.Vector(cx,cy,cz),App.Rotation())
+    return s
+
+# ---------------- CUERPO + CÚPULA ----------------
+bus_outer=cyl_x(P["bus_d"],P["bus_len"],cx=0)
+bus_inner=cyl_x(P["bus_d"]-2*P["bus_t"],P["bus_len"]-2*P["bus_t"],cx=0)
+bus_shell=bus_outer.cut(bus_inner)
+
+dome_cx=P["bus_len"]/2.0+P["dome_cx_offset"]
+dome_outer=sphere_at(P["dome_R"],cx=dome_cx)
+dome_inner=sphere_at(P["dome_R"]-P["dome_t"],cx=dome_cx)
+cut_box=Part.makeBox(2*P["dome_R"],4*P["dome_R"],4*P["dome_R"],
+                     App.Vector(dome_cx,-2*P["dome_R"],-2*P["dome_R"]))
+dome_shell=dome_outer.common(cut_box).cut(dome_inner.common(cut_box))
+
+# ---------------- TANQUES LATERALES ----------------
+tank_L=sphere_at(P["side_tank_R"],cx=P["side_tank_cx"],cy=-P["side_tank_offset_y"])
+tank_R=sphere_at(P["side_tank_R"],cx=P["side_tank_cx"],cy= P["side_tank_offset_y"])
+
+# ---------------- PATAS Y PADS ----------------
+legs=[]; pads=[]
+for i in range(P["leg_n"]):
+    az=i*(360.0/P["leg_n"])
+    y=P["leg_base_R"]*math.cos(math.radians(az))
+    z=P["leg_base_R"]*math.sin(math.radians(az))
+    leg=cyl_x(P["leg_d"],P["leg_len"],cx=P["leg_base_cx"],cy=y*0.98,cz=z*0.98)
+    legs.append(leg)
+    pad=cyl_x(P["pad_d"],P["pad_t"],cx=P["leg_base_cx"]-P["pad_drop"],cy=y,cz=z)
+    pads.append(pad)
+
+# ---------------- CLUSTER DE MOTORES EN LA BASE ----------------
+engine_base_x = -P["bus_len"]/2 - 400  # polo inferior
+
+# Motor central
+core_noz=cone_x(P["core_throat"],P["core_exit"],P["core_len"],cx=engine_base_x)
+
+# Motores principales en anillo
+main_cluster=[]
+for i in range(P["main_count"]):
+    ang=i*(360.0/P["main_count"])
+    y=P["main_ring_R"]*math.cos(math.radians(ang))
+    z=P["main_ring_R"]*math.sin(math.radians(ang))
+    noz=cone_x(P["main_throat"],P["main_exit"],P["main_len"],cx=engine_base_x,cy=y,cz=z)
+    main_cluster.append(noz)
+
+# Motores auxiliares
+aux_cluster=[]
+for i in range(P["aux_count"]):
+    ang=i*(360.0/P["aux_count"])
+    y=P["aux_ring_R"]*math.cos(math.radians(ang))
+    z=P["aux_ring_R"]*math.sin(math.radians(ang))
+    thr=cone_x(P["aux_d1"],P["aux_d2"],P["aux_len"],cx=engine_base_x-200,cy=y,cz=z)
+    aux_cluster.append(thr)
+
+# Anillo estructural de soporte
+engine_ring=cyl_x(P["engine_ring_d"],P["engine_ring_t"],cx=engine_base_x)
+
+# ---------------- ENSAMBLAJE ----------------
+items=[bus_shell,dome_shell,tank_L,tank_R,core_noz,engine_ring]+legs+pads+main_cluster+aux_cluster
+master=fuse_many(items)
+master_obj=add_obj(master,"ArgonLander_DomeCluster_BaseSolid",color=P["mint"])
+
+# ---------------- VISUAL AUXILIAR ----------------
+add_obj(bus_shell,"BusShell",color=P["accent"])
+add_obj(dome_shell,"DomeShell",color=P["accent"])
+add_obj(tank_L,"SideTank_L",color=P["mint"])
+add_obj(tank_R,"SideTank_R",color=P["mint"])
+add_obj(core_noz,"CoreNozzle",color=P["dark"])
+add_obj(engine_ring,"EngineRing",color=P["accent"])
+for i,noz in enumerate(main_cluster,1): add_obj(noz,f"MainNozz_{i}",color=P["dark"])
+for i,thr in enumerate(aux_cluster,1): add_obj(thr,f"AuxThr_{i}",color=P["accent"])
+for i,lg in enumerate(legs,1): add_obj(lg,f"Leg_{i}",color=P["accent"])
+for i,pd in enumerate(pads,1): add_obj(pd,f"Pad_{i}",color=P["accent"])
+
+# ---------------- VISTA ----------------
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except: pass

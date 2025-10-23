@@ -1,0 +1,313 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, Draft, math
+
+# ============================================================
+# Documento
+# ============================================================
+doc_name = "Quantum_H2_Engine_Unified"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# ============================================================
+# Utilidades
+# ============================================================
+def add_obj(shape, label, color=(0.8,0.8,0.8), transparency=0):
+    o = doc.addObject("Part::Feature", label)
+    o.Shape = shape
+    v = o.ViewObject if Gui.getDocument(doc.Name) else None
+    if v:
+        v.ShapeColor = color
+        v.Transparency = transparency
+        v.LineWidth = 1
+    return o
+
+def safe_fillet(s, r):
+    try:
+        return s.makeFillet(r, s.Edges)
+    except:
+        return s
+
+def safe_chamfer(s, r):
+    try:
+        return s.makeChamfer(r, s.Edges)
+    except:
+        return s
+
+def rotate_z(shape, deg):
+    m = App.Matrix()
+    m.rotateZ(deg * math.pi / 180.0)
+    return shape.transformGeometry(m)
+
+def fuse_many(solids):
+    solids = [s for s in solids if s]  # filtrar None
+    if not solids:
+        return None
+    u = solids[0]
+    for s in solids[1:]:
+        u = u.fuse(s)
+    return u
+
+def cut_many(base, cutters):
+    c = base
+    for k in cutters:
+        c = c.cut(k)
+    return c
+
+# Sweep de tubería curva compatible FreeCAD moderno
+def pipe_sweep(diameter, path_pts, label="Pipe", color=(0.85,0.85,0.88)):
+    if len(path_pts) < 2:
+        return None
+    pts_vectors = [App.Vector(*p) for p in path_pts]
+    wire = Draft.makeWire(pts_vectors, closed=False)
+    doc.recompute()
+    # Perfil circular como wire
+    circle_edge = Part.Circle(pts_vectors[0], App.Vector(0,1,0), diameter/2.0).toShape()
+    circle_wire = Part.Wire([circle_edge])
+    pipe_shape = circle_wire.makePipeShell([wire.Shape], True, True, True)
+    return add_obj(pipe_shape, label, color)
+
+# ============================================================
+# Parámetros globales
+# ============================================================
+D_BODY = 1200
+L_BODY = 2400
+T_SHELL = 30
+RIB_W = 18
+RIB_T = 50
+RING_R = 12
+RING_T = 40
+RING_PITCH = 300
+NOSE_H = 260
+DOME_R = D_BODY/1.9
+
+TOKA_R = 420
+TOKA_L = 900
+TOKA_T = 28
+
+DISK_R_INNER = 100
+DISK_R_OUTER = TOKA_R - 60
+DISK_THICK = 14
+DISK_PITCH = 110
+DISK_Z0 = 60
+DISK_HOLES = 12
+DISK_HOLE_D = 24
+
+COIL_R_MIN = 140
+COIL_R_MAX = TOKA_R - 50
+COIL_STEP  = 70
+COIL_TUBE_R = 16
+
+PIPE_D_MAIN   = 32
+PIPE_D_SENSOR = 14
+
+WINDOW_W = 360
+WINDOW_H = 200
+WINDOW_T = 16
+
+# Colores
+C_SHELL = (0.70,0.75,0.78)
+C_RINGS = (0.30,0.30,0.35)
+C_RIBS  = (0.25,0.25,0.30)
+C_NOSE  = (0.58,0.60,0.65)
+C_DOME  = (0.45,0.45,0.48)
+
+C_TOKA  = (0.55,0.80,1.00)
+C_DISK  = (0.85,0.65,0.20)   # Cobre/dorado
+C_COIL  = (0.20,0.50,0.95)   # Azul superconductivo
+C_PIPE  = (0.85,0.85,0.88)
+C_PIPE_SENS = (0.90,0.90,0.92)
+C_WINDOW_FRAME = (0.50,0.55,0.60)
+C_WAVE  = (0.95,0.35,0.20)
+
+# Transparencias
+T_TOKA  = 30
+T_DISKS = 10
+T_COILS = 0
+
+# ============================================================
+# 1) Cáscara externa + anillos + riostras + tapa inferior + escudo superior
+# ============================================================
+outer_cyl = Part.makeCylinder(D_BODY/2, L_BODY)
+inner_cyl = Part.makeCylinder(D_BODY/2 - T_SHELL, L_BODY - 30)
+shell = safe_fillet(outer_cyl.cut(inner_cyl), 6)
+shell_obj = add_obj(shell, "Cascara_Exterior", C_SHELL)
+
+# Anillos exteriores
+rings = []
+for z in range(0, int(L_BODY), RING_PITCH):
+    tor = Part.makeTorus(D_BODY/2 - RING_T, RING_R)
+    tor.translate(App.Vector(0,0,z))
+    rings.append(tor)
+ring_union = fuse_many(rings)
+ring_obj = add_obj(ring_union, "Anillos_Externos", C_RINGS)
+
+# Riostras longitudinales
+ribs = []
+for angle in range(0, 360, 20):
+    rib = Part.makeBox(RIB_W, T_SHELL, L_BODY)
+    rib.translate(App.Vector(D_BODY/2 - RIB_T, -T_SHELL/2, 0))
+    rib = rotate_z(rib, angle)
+    ribs.append(rib)
+rib_union = fuse_many(ribs)
+rib_obj = add_obj(rib_union, "Riostras_Longitudinales", C_RIBS)
+
+# Tapa inferior tipo cono corto (nariz térmica invertida)
+nose = Part.makeCone(D_BODY/2 - 10, D_BODY/4, NOSE_H)
+nose.translate(App.Vector(0,0,-NOSE_H))
+nose = safe_fillet(nose, 4)
+nose_obj = add_obj(nose, "Tapa_Inferior_Termica", C_NOSE)
+
+# Escudo superior tipo cúpula
+dome = Part.makeSphere(DOME_R)
+cut_box = Part.makeBox(D_BODY*2, D_BODY*2, DOME_R)
+cut_box.translate(App.Vector(-D_BODY, -D_BODY, 0))
+dome = safe_fillet(dome.cut(cut_box), 6)
+dome.translate(App.Vector(0,0,L_BODY))
+dome_obj = add_obj(dome, "Escudo_Superior", C_DOME)
+
+shell_full = fuse_many([shell_obj.Shape, ring_obj.Shape, rib_obj.Shape, nose_obj.Shape, dome_obj.Shape])
+
+# ============================================================
+# 2) Núcleo tokamak
+# ============================================================
+toka_shell = Part.makeCylinder(TOKA_R, TOKA_L)
+toka_inner = Part.makeCylinder(TOKA_R - TOKA_T, TOKA_L - 40)
+tokamak = safe_fillet(toka_shell.cut(toka_inner), 3)
+tokamak.translate(App.Vector(0,0,L_BODY + 120))
+tokamak_obj = add_obj(tokamak, "Tokamak_Shell", C_TOKA, transparency=T_TOKA)
+
+# ============================================================
+# 3) Discos internos tipo ordenador cuántico
+# ============================================================
+disk_solids = []
+z = DISK_Z0
+while z < TOKA_L - 40:
+    disk = Part.makeCylinder(DISK_R_OUTER, DISK_THICK)
+    inner_hole = Part.makeCylinder(DISK_R_INNER, DISK_THICK + 2)
+    disk = disk.cut(inner_hole)
+    # Agujeros radiales
+    holes = []
+    for a in range(0, 360, int(360 / DISK_HOLES)):
+        hx = (DISK_R_OUTER + DISK_R_INNER) / 2.0
+        hole = Part.makeCylinder(DISK_HOLE_D/2.0, DISK_THICK + 4)
+        hole.translate(App.Vector(hx, 0, 0))
+        hole = rotate_z(hole, a)
+        holes.append(hole)
+    disk = cut_many(disk, holes)
+    disk.translate(App.Vector(0, 0, z))
+    disk_solids.append(disk)
+    z += DISK_PITCH
+
+disks_union = fuse_many(disk_solids)
+disks_union.translate(App.Vector(0, 0, L_BODY + 120))
+disks_obj = add_obj(disks_union, "Discos_Coaxiales", C_DISK, transparency=T_DISKS)
+
+# ============================================================
+# 4) Bobinas toroidales concéntricas
+# ============================================================
+coils = []
+r = COIL_R_MIN
+while r <= COIL_R_MAX:
+    coil = Part.makeTorus(r, COIL_TUBE_R)
+    coil.translate(App.Vector(0, 0, L_BODY + 120 + TOKA_L/2))
+    coils.append(coil)
+    r += COIL_STEP
+coil_union = fuse_many(coils)
+coil_obj = add_obj(coil_union, "Bobinas_Toroidales", C_COIL, transparency=T_COILS)
+
+# ============================================================
+# 5) Tuberías curvadas (principal + sensor)
+# ============================================================
+pipes_shapes = []
+base_z = L_BODY + 120 + TOKA_L/2
+for a in [0, 90, 180, 270]:
+    # Principal
+    pts_main = [
+        (TOKA_R, 0, base_z),
+        (TOKA_R + 120, 80, base_z + 60),
+        (D_BODY/2 - 80, 160, base_z + 140),
+        (D_BODY/2 - 50, 220, base_z + 40),
+    ]
+    rot_pts = []
+    for x, y, zp in pts_main:
+        ang = math.radians(a)
+        rx = x*math.cos(ang) - y*math.sin(ang)
+        ry = x*math.sin(ang) + y*math.cos(ang)
+        rot_pts.append((rx, ry, zp))
+    p_main = pipe_sweep(PIPE_D_MAIN, rot_pts, label=f"Pipe_Main_{a}", color=C_PIPE)
+    pipes_shapes.append(p_main.Shape if p_main else None)
+
+    # Sensor
+    pts_sens = [
+        (TOKA_R-40, 0, base_z-40),
+        (TOKA_R + 80, 40, base_z + 10),
+        (D_BODY/2 - 120, 140, base_z + 80),
+    ]
+    rot_pts2 = []
+    for x, y, zp in pts_sens:
+        ang = math.radians(a)
+        rx = x*math.cos(ang) - y*math.sin(ang)
+        ry = x*math.sin(ang) + y*math.cos(ang)
+        rot_pts2.append((rx, ry, zp))
+    p_sens = pipe_sweep(PIPE_D_SENSOR, rot_pts2, label=f"Pipe_Sensor_{a}", color=C_PIPE_SENS)
+    pipes_shapes.append(p_sens.Shape if p_sens else None)
+
+pipe_union = fuse_many([s for s in pipes_shapes if s])
+pipes_obj = add_obj(pipe_union, "Tuberias_Curvas", C_PIPE)
+
+# ============================================================
+# 6) Ventana central con patrón de onda (corte + marco + inserto)
+# ============================================================
+# Corte elíptico aproximado con cilindro
+win_cutter = Part.makeCylinder(WINDOW_W/2, WINDOW_T)
+win_cutter.translate(App.Vector(D_BODY/2 - T_SHELL/2, -WINDOW_W/2, L_BODY/2 - WINDOW_H/2))
+
+shell_cut = shell_obj.Shape.cut(win_cutter)
+shell_cut = safe_chamfer(shell_cut, 1.5)
+shell_cut_obj = add_obj(shell_cut, "Cascara_Exterior_Cortada", C_SHELL)
+
+# Marco interno
+frame = Part.makeBox(WINDOW_W, WINDOW_T, WINDOW_H)
+frame.translate(App.Vector(D_BODY/2 - T_SHELL - WINDOW_T, -WINDOW_W/2, L_BODY/2 - WINDOW_H/2))
+frame = safe_chamfer(frame, 2)
+frame_obj = add_obj(frame, "Ventana_Frame", C_WINDOW_FRAME)
+
+# Inserto decorativo “onda”
+wave_plate = Part.makeBox(WINDOW_W-40, WINDOW_T-4, WINDOW_H-40)
+wave_plate.translate(App.Vector(D_BODY/2 - T_SHELL - WINDOW_T - 6, - (WINDOW_W-40)/2, L_BODY/2 - (WINDOW_H-40)/2))
+
+holes_wave = []
+periods = 6
+for i in range(0, periods*10, 2):
+    y = - (WINDOW_W-40)/2 + i*4
+    amp = 18 * math.sin(i/3.0)
+    cyl = Part.makeCylinder(6, WINDOW_T+10)
+    cyl.translate(App.Vector(D_BODY/2 - T_SHELL - WINDOW_T - 6 + amp, y, L_BODY/2))
+    holes_wave.append(cyl)
+wave_plate = cut_many(wave_plate, holes_wave)
+wave_obj = add_obj(wave_plate, "Ventana_Wave", C_WAVE)
+
+# Re-fusionar con anillos, riostras, etc.
+shell_full_cut = fuse_many([shell_cut_obj.Shape, ring_obj.Shape, rib_obj.Shape, nose_obj.Shape, dome_obj.Shape])
+
+# ============================================================
+# 7) Ensamblaje final unificado
+# ============================================================
+assembly = fuse_many([
+    shell_full_cut,
+    tokamak_obj.Shape,
+    disks_obj.Shape,
+    coil_obj.Shape,
+    pipes_obj.Shape,
+    frame_obj.Shape,
+    wave_obj.Shape
+])
+
+final_obj = add_obj(assembly, "Quantum_Probe_Unified", (0.72,0.77,0.80))
+doc.recompute()
+if Gui.getDocument(doc.Name):
+    Gui.activeDocument().activeView().viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+
+print("✅ Nave cuántica unificada tipo Parker Probe + Tokamak generada. Listo para FEM/CFD.")
