@@ -1,0 +1,66 @@
+--=========================================================
+-- File: tmr_led_controller.vhd
+-- Target: Xilinx ZCU106 (UltraScale+)
+-- Function: Triple Modular Redundancy applied to switches controlling LEDs
+--=========================================================
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity tmr_led_controller is
+  port (
+    CLK_125_N     : in  std_logic;                       -- Clock 125 MHz
+    rst_n         : in  std_logic;                       -- Active-low reset
+    GPIO_DIP_SW0  : in  std_logic;                       -- Switch 1
+    GPIO_DIP_SW1  : in  std_logic;                       -- Switch 2
+    GPIO_LED_0_LS : out std_logic;                      -- LED 0
+    GPIO_LED_1_LS : out std_logic;                      -- LED 1
+    GPIO_LED_2_LS : out std_logic                       -- LED 2
+  );
+end entity;
+
+architecture rtl of tmr_led_controller is
+
+  -- Replicated signals for TMR (Triple Modular Redundancy)
+  signal sw_w_a, sw_w_b, sw_w_c : std_logic;
+  signal sw_c_a, sw_c_b, sw_c_c : std_logic;
+
+  -- Majority voting outputs
+  signal sw_w_vote, sw_c_vote : std_logic;
+
+begin
+
+  ----------------------------------------------------------------
+  -- REPLICATION (3 channels)
+  ----------------------------------------------------------------
+  process(CLK_125_N, rst_n)
+  begin
+    if rst_n = '0' then
+      sw_w_a <= '0'; sw_w_b <= '0'; sw_w_c <= '0';
+      sw_c_a <= '0'; sw_c_b <= '0'; sw_c_c <= '0';
+    elsif rising_edge(CLK_125_N) then
+      sw_w_a <= GPIO_DIP_SW0;
+      sw_w_b <= GPIO_DIP_SW0;
+      sw_w_c <= GPIO_DIP_SW0;
+
+      sw_c_a <=  GPIO_DIP_SW1;
+      sw_c_b <=  GPIO_DIP_SW1;
+      sw_c_c <=  GPIO_DIP_SW1;
+    end if;
+  end process;
+
+  ----------------------------------------------------------------
+  -- MAJORITY VOTING LOGIC
+  ----------------------------------------------------------------
+  sw_w_vote <= (sw_w_a and sw_w_b) or (sw_w_b and sw_w_c) or (sw_w_a and sw_w_c);
+  sw_c_vote <= (sw_c_a and sw_c_b) or (sw_c_b and sw_c_c) or (sw_c_a and sw_c_c);
+
+  ----------------------------------------------------------------
+  -- OUTPUT LOGIC (map to LEDs)
+  ----------------------------------------------------------------
+  GPIO_LED_0_LS <= sw_w_vote;
+  GPIO_LED_1_LS <= sw_c_vote;
+  GPIO_LED_2_LS <= sw_w_vote xor sw_c_vote;
+
+end architecture;

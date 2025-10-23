@@ -1,0 +1,259 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+doc_name = "SolarParker_Cohete_Grande"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# -------------------------
+# Parámetros globales (ampliados tipo Cassini)
+# -------------------------
+P = {
+    # Cuerpo central y tanque principal
+    "tank_len": 5200.0, "tank_d": 2600.0, "hull_t": 25.0,
+    # Casco exterior (volumen de cohete compacto)
+    "hull_outer_d": 3200.0,
+    # Escudo térmico frontal (TPS cúpula)
+    "tps_front_R": 2200.0, "tps_front_t": 80.0, "tps_offset": 320.0,
+    # Transición cónica (shoulder)
+    "shoulder_len": 600.0,
+    # Sunshades
+    "shade_len": 1200.0, "shade_w": 900.0, "shade_t": 50.0, "shade_r": 1800.0,
+    # Puntales radiales TPS–Hull
+    "strut_d": 110.0, "strut_r": 1400.0,
+    # Bus instrumental (equipment deck)
+    "bus_len": 1800.0, "bus_outer_d": 3400.0, "bus_inner_d": 3000.0,
+    # Antena HGA (parabólica)
+    "hga_R": 1600.0, "hga_t": 12.0, "hga_offset": 400.0, "hga_mast_len": 900.0, "hga_mast_d": 120.0,
+    # RTGs / radiadores laterales
+    "rtg_box_l": 900.0, "rtg_box_w": 500.0, "rtg_box_t": 240.0,
+    "rtg_arm_len": 800.0, "rtg_arm_d": 140.0, "rtg_arm_offset_z": 700.0,
+    # Cámara de combustión
+    "chamber_len": 1800.0, "chamber_d": 1400.0,
+    # Tobera tipo campana
+    "throat_d": 500.0, "exit_d": 2800.0, "nozzle_len": 2300.0,
+    "nozzle_mid_d": 1800.0, "nozzle_mid_x": 800.0,
+    # Aro de gimbal
+    "gimbal_ring_ro": 1600.0, "gimbal_ring_ri": 1520.0, "gimbal_ring_t": 50.0,
+    # TPS trasero (aft shield)
+    "aft_shield_len": 900.0, "aft_shield_d1": 2800.0, "aft_shield_d2": 2000.0,
+    # Mástiles científicos
+    "mast_len": 1800.0, "mast_d": 100.0, "mast_tip_R": 220.0, "mast_tip_t": 8.0,
+    # Paneles solares adicionales (si se usan)
+    "solar_len": 2800.0, "solar_w": 900.0, "solar_t": 35.0,
+}
+
+# -------------------------
+# Utilidades
+# -------------------------
+X_AXIS = App.Vector(1,0,0); Y_AXIS = App.Vector(0,1,0); Z_AXIS = App.Vector(0,0,1)
+def rot_to_x(): return App.Rotation(Y_AXIS, 90)
+
+def add_obj(shape, name):
+    o = doc.addObject("Part::Feature", name); o.Shape = shape; return o
+def color(o, rgb):
+    try: o.ViewObject.ShapeColor = rgb
+    except: pass
+
+def cyl_x(d, L, cx=0, cy=0, cz=0):
+    s = Part.makeCylinder(d/2.0, L)
+    s.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return s
+
+def cone_x(d1, d2, L, cx=0, cy=0, cz=0):
+    s = Part.makeCone(d1/2.0, d2/2.0, L)
+    s.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return s
+
+def circle_wire(d, cx, cy=0, cz=0):
+    circle = Part.Circle(App.Vector(cx, cy, cz), App.Vector(1,0,0), d/2.0)
+    return circle.toShape()
+
+# -------------------------
+# Tanque y casco exterior
+# -------------------------
+tank_cx = 0.0
+tank = cyl_x(P["tank_d"], P["tank_len"], cx=tank_cx)
+tank_obj = add_obj(tank,"Tank"); color(tank_obj,(0.2,0.6,1.0))
+
+hull = cyl_x(P["hull_outer_d"], P["tank_len"], cx=tank_cx)
+hull_shell = hull.cut(tank)
+hull_obj = add_obj(hull_shell,"HullOuter"); color(hull_obj,(0.15,0.3,0.55))
+
+# -------------------------
+# Bus instrumental (equipment deck) tipo cápsula cilíndrica
+# -------------------------
+bus_cx = tank_cx  # centrado sobre el tanque
+bus_outer = cyl_x(P["bus_outer_d"], P["bus_len"], cx=bus_cx)
+bus_inner = cyl_x(P["bus_inner_d"], P["bus_len"] - 2*P["hull_t"], cx=bus_cx)
+bus_shell = bus_outer.cut(bus_inner)
+bus_obj = add_obj(bus_shell,"BusDeck"); color(bus_obj,(0.35,0.35,0.42))
+
+# -------------------------
+# TPS frontal cúpula + shoulder
+# -------------------------
+R = P["tps_front_R"]; t = P["tps_front_t"]
+cap_center_x = tank_cx + P["tank_len"]/2.0 + P["tps_offset"]
+
+sphere_out = Part.makeSphere(R); sphere_in = Part.makeSphere(R - t)
+sphere_out.Placement = App.Placement(App.Vector(cap_center_x,0,0), App.Rotation())
+sphere_in.Placement  = sphere_out.Placement
+# hemisferio frontal
+box = Part.makeBox(2*R, 4*R, 4*R, App.Vector(cap_center_x, -2*R, -2*R))
+tps_front = sphere_out.common(box).cut(sphere_in.common(box))
+tps_front_obj = add_obj(tps_front,"TPS_Front"); color(tps_front_obj,(0.08,0.08,0.08))
+
+shoulder_cx = cap_center_x - P["shoulder_len"]/2.0
+shoulder = cone_x(d1=2.0*R, d2=P["hull_outer_d"], L=P["shoulder_len"], cx=shoulder_cx)
+shoulder_obj = add_obj(shoulder,"TPS_Shoulder"); color(shoulder_obj,(0.1,0.1,0.12))
+
+# -------------------------
+# Sunshades (4 paneles térmicos en cruz)
+# -------------------------
+def make_shade(offset_vec, name):
+    s = Part.makeBox(P["shade_len"], P["shade_w"], P["shade_t"])
+    s.translate(App.Vector(cap_center_x - P["shade_len"]/2.0, 0, 0))
+    s.translate(offset_vec)
+    o = add_obj(s, name); color(o,(0.25,0.25,0.25)); return o
+
+r = P["shade_r"]; w = P["shade_w"]
+shadeYp = make_shade(App.Vector(0,  r - w/2.0, 0), "Shade_Yp")
+shadeYn = make_shade(App.Vector(0, -r - w/2.0, 0), "Shade_Yn")
+shadeZp = make_shade(App.Vector(0, 0,  r - w/2.0), "Shade_Zp")
+shadeZn = make_shade(App.Vector(0, 0, -r - w/2.0), "Shade_Zn")
+
+# -------------------------
+# Puntales radiales y anillos de rigidez
+# -------------------------
+def strut_at(y, z, L, name):
+    cx = tank_cx + P["tank_len"]/2.0 + L/2.0
+    s = cyl_x(P["strut_d"], L, cx=cx, cy=y, cz=z)
+    o = add_obj(s, name); color(o,(0.45,0.45,0.45)); return o
+
+strut_len = P["tps_offset"] + P["shoulder_len"]
+strut1 = strut_at( P["strut_r"], 0, strut_len, "Strut_Yp")
+strut2 = strut_at(-P["strut_r"], 0, strut_len, "Strut_Yn")
+strut3 = strut_at(0,  P["strut_r"], strut_len, "Strut_Zp")
+strut4 = strut_at(0, -P["strut_r"], strut_len, "Strut_Zn")
+
+# Anillo de rigidez en el borde del shoulder
+ring_cx = shoulder_cx
+ring = Part.makeTorus(P["hull_outer_d"]/2.0, 40.0)
+ring.Placement = App.Placement(App.Vector(ring_cx,0,0), rot_to_x())
+ring_obj = add_obj(ring,"StiffRing"); color(ring_obj,(0.4,0.4,0.45))
+
+# -------------------------
+# Antena HGA parabólica + mástil
+# -------------------------
+hga_center_x = cap_center_x + P["hga_offset"]
+hga_out = Part.makeSphere(P["hga_R"])
+hga_in  = Part.makeSphere(P["hga_R"] - P["hga_t"])
+for s in (hga_out, hga_in):
+    s.Placement = App.Placement(App.Vector(hga_center_x,0,0), App.Rotation())
+# recorte hemisferio frontal
+hga_box = Part.makeBox(2*P["hga_R"], 4*P["hga_R"], 4*P["hga_R"], App.Vector(hga_center_x, -2*P["hga_R"], -2*P["hga_R"]))
+hga_shell = hga_out.common(hga_box).cut(hga_in.common(hga_box))
+hga_obj = add_obj(hga_shell,"HGA"); color(hga_obj,(0.85,0.85,0.9))
+
+hga_mast = cyl_x(P["hga_mast_d"], P["hga_mast_len"], cx=hga_center_x - P["hga_mast_len"]/2.0,
+                 cy=0.0, cz=P["hull_outer_d"]/2.0 + 120.0)
+hga_mast_obj = add_obj(hga_mast,"HGA_Mast"); color(hga_mast_obj,(0.7,0.7,0.75))
+
+# -------------------------
+# RTGs / radiadores laterales con brazos
+# -------------------------
+def rtg_module(sign, name_prefix):
+    arm = cyl_x(P["rtg_arm_d"], P["rtg_arm_len"],
+                cx=tank_cx + P["tank_len"]/4.0 - P["rtg_arm_len"]/2.0,
+                cy=sign*(P["hull_outer_d"]/2.0 + 200.0),
+                cz=P["rtg_arm_offset_z"])
+    arm_obj = add_obj(arm, f"{name_prefix}_Arm"); color(arm_obj,(0.5,0.5,0.55))
+    box = Part.makeBox(P["rtg_box_l"], P["rtg_box_w"], P["rtg_box_t"])
+    box.translate(App.Vector(tank_cx + P["tank_len"]/4.0,
+                             sign*(P["hull_outer_d"]/2.0 + 200.0) - P["rtg_box_w"]/2.0,
+                             P["rtg_arm_offset_z"] - P["rtg_box_t"]/2.0))
+    box_obj = add_obj(box, f"{name_prefix}_Box"); color(box_obj,(0.7,0.55,0.25))
+    return arm_obj, box_obj
+
+rtgYp_arm, rtgYp_box = rtg_module(+1, "RTG_Yp")
+rtgYn_arm, rtgYn_box = rtg_module(-1, "RTG_Yn")
+
+# -------------------------
+# Cámara de combustión y tobera
+# -------------------------
+chamber_cx = tank_cx - P["tank_len"]/2.0 - P["chamber_len"]/2.0
+chamber = cyl_x(P["chamber_d"], P["chamber_len"], cx=chamber_cx)
+chamber_obj = add_obj(chamber,"Chamber"); color(chamber_obj,(0.7,0.7,0.6))
+
+throat_cx = chamber_cx - P["chamber_len"]/2.0
+exit_cx   = throat_cx - P["nozzle_len"]
+w_throat = circle_wire(P["throat_d"], throat_cx)
+w_mid    = circle_wire(P["nozzle_mid_d"], throat_cx - P["nozzle_mid_x"])
+w_exit   = circle_wire(P["exit_d"], exit_cx)
+loft = Part.makeLoft([w_throat, w_mid, w_exit], True)
+nozzle_obj = add_obj(loft,"Nozzle"); color(nozzle_obj,(0.6,0.6,0.6))
+
+# Aro de gimbal
+gimbal_outer = Part.makeTorus(P["gimbal_ring_ro"], P["gimbal_ring_t"]/2.0)
+gimbal_inner = Part.makeTorus(P["gimbal_ring_ri"], P["gimbal_ring_t"]/2.0)
+for s in (gimbal_outer, gimbal_inner):
+    s.Placement = App.Placement(App.Vector(chamber_cx + P["chamber_len"]/2.0,0,0), rot_to_x())
+gimbal_ring = gimbal_outer.cut(gimbal_inner)
+gimbal_obj = add_obj(gimbal_ring,"Gimbal"); color(gimbal_obj,(0.5,0.5,0.5))
+
+# TPS trasero
+aft_cx = chamber_cx + P["chamber_len"]/2.0 + P["aft_shield_len"]/2.0
+aft_shield = cone_x(P["aft_shield_d1"], P["aft_shield_d2"], P["aft_shield_len"], cx=aft_cx)
+aft_obj = add_obj(aft_shield,"TPS_Aft"); color(aft_obj,(0.1,0.1,0.12))
+
+# -------------------------
+# Mástiles científicos
+# -------------------------
+mast1 = cyl_x(P["mast_d"], P["mast_len"], cx=tank_cx + P["tank_len"]/2.0 - 250.0,
+              cy=0.0, cz=P["hull_outer_d"]/2.0 + 250.0)
+mast_obj = add_obj(mast1,"ScienceMast"); color(mast_obj,(0.8,0.8,0.9))
+
+# Punta hemisférica del mástil
+tip_center = mast1.BoundBox.XMax
+tip_out = Part.makeSphere(P["mast_tip_R"]); tip_in = Part.makeSphere(P["mast_tip_R"] - P["mast_tip_t"])
+for s in (tip_out, tip_in):
+    s.Placement = App.Placement(App.Vector(tip_center, mast1.BoundBox.YCenter, mast1.BoundBox.ZCenter), App.Rotation())
+box_tip = Part.makeBox(2*P["mast_tip_R"], 4*P["mast_tip_R"], 4*P["mast_tip_R"],
+                       App.Vector(tip_center, mast1.BoundBox.YCenter - 2*P["mast_tip_R"], mast1.BoundBox.ZCenter - 2*P["mast_tip_R"]))
+tip_shell = tip_out.common(box_tip).cut(tip_in.common(box_tip))
+tip_obj = add_obj(tip_shell,"MastTip"); color(tip_obj,(0.85,0.85,0.9))
+
+# -------------------------
+# Paneles solares opcionales en cruceta (si se desea)
+# -------------------------
+solarYp = Part.makeBox(P["solar_len"], P["solar_w"], P["solar_t"])
+solarYp.translate(App.Vector(-P["solar_len"]/2.0 + tank_cx + P["tank_len"]/3.0,
+                             P["hull_outer_d"]/2.0 + 80.0,  900.0))
+solarYp_obj = add_obj(solarYp,"Solar_Yp"); color(solarYp_obj,(0.9,0.7,0.2))
+
+solarYn = Part.makeBox(P["solar_len"], P["solar_w"], P["solar_t"])
+solarYn.translate(App.Vector(-P["solar_len"]/2.0 + tank_cx + P["tank_len"]/3.0,
+                            -P["hull_outer_d"]/2.0 - P["solar_w"] - 80.0, 900.0))
+solarYn_obj = add_obj(solarYn,"Solar_Yn"); color(solarYn_obj,(0.9,0.7,0.2))
+
+# -------------------------
+# Agrupar
+# -------------------------
+grp = doc.addObject("App::Part","SolarParkerCassiniHybrid")
+for o in [tank_obj,hull_obj,bus_obj,
+          tps_front_obj,shoulder_obj,
+          shadeYp,shadeYn,shadeZp,shadeZn,
+          strut1,strut2,strut3,strut4,ring_obj,
+          hga_obj,hga_mast_obj,
+          rtgYp_arm,rtgYp_box,rtgYn_arm,rtgYn_box,
+          chamber_obj,nozzle_obj,gimbal_obj,aft_obj,
+          mast_obj,tip_obj,
+          solarYp_obj,solarYn_obj]:
+    grp.addObject(o)
+
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except: pass

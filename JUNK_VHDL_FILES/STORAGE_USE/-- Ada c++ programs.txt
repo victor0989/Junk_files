@@ -1,0 +1,123 @@
+-- Ada c++ programs
+-- integers
+procedure Main is
+   -- Variable declarations
+   A, B : Integer := 0;
+   C    : Integer := 100;
+   D    : Integer;
+begin
+   -- Ada uses a regular statemnt incrementatn
+   A := A + 1;
+
+   -- Regular addition
+   D := A + B + C;
+end Main;
+
+int main(int argc, const char* argv[]) {
+ // Variable declarations
+ int a = 0, b = 0, c = 100, d;
+
+// C++ shorthand for incrementation
+a++;
+
+//regular additn
+d = a + b + c;
+}
+
+public class Main {
+  public static void main(String [] argv) {
+// Variable declarations
+int a = 0, b = 0, c = 100, d;
+
+// Java shorthand increments
+a++;
+
+// Regular addition
+d = a + b + c;
+
+ }
+}
+
+with Ada.Text_IO; use Ada.Text_IO;
+
+procedure Main is
+begin
+   Put_Line ("Before the inner block");
+
+   declare
+      Alpha : Integer := 0;
+   begin
+      Alpha : Alpha + 1;
+      Put_Line ("");
+   end;
+
+   Put_Line("");
+end Main;
+
+if Variable > 0 then
+   Put_Line ("> 0");
+elsif Variable < 0 then
+   Put_Line ("< 0");
+else
+   Put_Line ("= 0");
+end if;
+
+[C++]
+if (Variable > 0)
+   cout << "> 0 "<< endl;
+else if (Variable < 0)
+   cout << "<0"<< endl;
+else
+   cout << "=0" << endl;
+
+[Ada]
+case Variable is
+   when 0 =>
+       Put_Line ("Zero");
+   when 1 .. 9 =>
+       Put_Line ("Positive Digit");
+   when 10 | 12 | 14 | 16 | 18 =>
+      Put_Line ("Even Number between 10 and 18");
+   when others =>
+      Put_Line ("Something else");
+end case;
+
+[C++]
+switch (Variable) {
+   case 0:
+      cout << "Zero" << endl;
+      break;
+   case 1: case 2: case 3: case 4: case 5:
+   case 6: case 7: case 8: case 9:
+   cout << "Positive Digit" << endl;
+   break;
+case 10: case 12: case 14: case 16: case 18:
+
+cout << "Even number between 10 and 18" << endl;
+break;
+default:
+   cout << "";
+}
+
+[loops]
+while Variable < 10_000 loop
+   Variable := Variable * 2;
+end loop;
+
+[c++]
+while (Variable < 10000) {
+   Variable = Variable * 2;
+ }
+}
+
+[c++]
+// outputs 0, 1, 2, …, 9
+for (int Variable = 0; Variable <= 9; Variable++)
+   cout << Variable << endl;
+}
+
+// outputs 9,8,7, …, 0
+for (int Variable = 9; Variable >=0; Variable--)
+   cout << Variable << endl;
+}
+

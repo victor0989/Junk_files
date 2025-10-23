@@ -1,0 +1,181 @@
+--=========================================================
+-- File: satellite_tmr_scrubber.vhd
+-- Target: Xilinx ZCU106 UltraScale+
+-- Author: Víctor Alonso García
+-- Description:
+--   TMR + Scrubber FSM Controller (based on traffic light logic)
+--   Triple-redundant finite state machine with majority voter.
+--=========================================================
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity satellite_tmr_scrubber is
+  generic(
+    C_VERDE    : natural := 125000000; -- duración verde (1s @125MHz)
+    C_AMARILLO : natural := 62500000;  -- duración amarillo (0.5s)
+    C_ROJO     : natural := 125000000  -- duración rojo (1s)
+  );
+  port(
+    CLK_125_P   : in  std_logic;                       -- Clock 125 MHz
+    RST         : in  std_logic;                       -- Reset asíncrono activo alto
+    PMOD1_0_LS  : in  std_logic;                       -- Botón / trigger (input)
+    PMOD1_1_LS  : out std_logic_vector(2 downto 0);    -- Estado 'coche' votado
+    PMOD1_2_LS  : out std_logic_vector(2 downto 0);    -- Estado 'peatón' votado
+    PMOD1_3_LS  : out std_logic;                       -- Bit de diagnóstico scrubber
+    PMOD1_4_LS  : out std_logic;                       -- Clock dividido (1Hz)
+    PMOD1_5_LS  : out std_logic;                       -- Indicador estado interno
+    PMOD1_6_LS  : out std_logic;                       -- Diagnóstico (módulo A)
+    PMOD1_7_LS  : out std_logic                        -- Diagnóstico (módulo B)
+  );
+end satellite_tmr_scrubber;
+
+architecture rtl of satellite_tmr_scrubber is
+
+  ----------------------------------------------------------------
+  -- Definición de estados
+  ----------------------------------------------------------------
+  type estados_t is (cVpR, cVpRCond, cApR, cRpV, cRpR);
+
+  constant sRojo     : std_logic_vector(2 downto 0) := "100";
+  constant sAmarillo : std_logic_vector(2 downto 0) := "010";
+  constant sVerde    : std_logic_vector(2 downto 0) := "001";
+
+  ----------------------------------------------------------------
+  -- Señales de TMR (3 copias de estado y contador)
+  ----------------------------------------------------------------
+  signal estado_A, estado_B, estado_C : estados_t := cVpR;
+  signal ciclos_A, ciclos_B, ciclos_C : natural := 0;
+
+  signal boton_sync : std_logic := '0';
+  signal clk_div    : std_logic := '0';
+
+  ----------------------------------------------------------------
+  -- Votación por mayoría de estado (para scrubber)
+  ----------------------------------------------------------------
+  function majority_state(a,b,c : estados_t) return estados_t is
+  begin
+    if (a = b) then
+      return a;
+    elsif (b = c) then
+      return b;
+    else
+      return a; -- fallback
+    end if;
+  end function;
+
+  ----------------------------------------------------------------
+  -- Clock divider para diagnóstico o control más lento
+  ----------------------------------------------------------------
+  signal div_cnt : unsigned(26 downto 0) := (others => '0'); -- ~1Hz @125MHz
+
+begin
+
+  ----------------------------------------------------------------
+  -- Divisor de reloj (1 Hz aprox.)
+  ----------------------------------------------------------------
+  process(CLK_125_P)
+  begin
+    if rising_edge(CLK_125_P) then
+      if div_cnt = 62499999 then
+        div_cnt <= (others => '0');
+        clk_div <= not clk_div;
+      else
+        div_cnt <= div_cnt + 1;
+      end if;
+    end if;
+  end process;
+
+  PMOD1_4_LS <= clk_div;
+
+  ----------------------------------------------------------------
+  -- Sincronización del botón de entrada
+  ----------------------------------------------------------------
+  process(CLK_125_P)
+  begin
+    if rising_edge(CLK_125_P) then
+      boton_sync <= PMOD1_0_LS;
+    end if;
+  end process;
+
+  ----------------------------------------------------------------
+  -- FSMs redundantes con scrubbing integrado
+  ----------------------------------------------------------------
+  process(CLK_125_P, RST)
+    variable voted : estados_t;
+  begin
+    if RST = '1' then
+      estado_A <= cVpR; estado_B <= cVpR; estado_C <= cVpR;
+      ciclos_A <= C_VERDE; ciclos_B <= C_VERDE; ciclos_C <= C_VERDE;
+
+    elsif rising_edge(CLK_125_P) then
+      --=== Canal A ===--
+      if ciclos_A /= 0 then
+        ciclos_A <= ciclos_A - 1;
+      else
+        case estado_A is
+          when cVpR      => estado_A <= cVpRCond;
+          when cVpRCond  => if boton_sync='1' then estado_A <= cApR; ciclos_A <= C_AMARILLO; end if;
+          when cApR      => estado_A <= cRpV; ciclos_A <= C_ROJO;
+          when cRpV      => estado_A <= cRpR; ciclos_A <= C_AMARILLO;
+          when cRpR      => estado_A <= cVpR; ciclos_A <= C_VERDE;
+        end case;
+      end if;
+
+      --=== Canal B ===--
+      if ciclos_B /= 0 then
+        ciclos_B <= ciclos_B - 1;
+      else
+        case estado_B is
+          when cVpR      => estado_B <= cVpRCond;
+          when cVpRCond  => if boton_sync='1' then estado_B <= cApR; ciclos_B <= C_AMARILLO; end if;
+          when cApR      => estado_B <= cRpV; ciclos_B <= C_ROJO;
+          when cRpV      => estado_B <= cRpR; ciclos_B <= C_AMARILLO;
+          when cRpR      => estado_B <= cVpR; ciclos_B <= C_VERDE;
+        end case;
+      end if;
+
+      --=== Canal C ===--
+      if ciclos_C /= 0 then
+        ciclos_C <= ciclos_C - 1;
+      else
+        case estado_C is
+          when cVpR      => estado_C <= cVpRCond;
+          when cVpRCond  => if boton_sync='1' then estado_C <= cApR; ciclos_C <= C_AMARILLO; end if;
+          when cApR      => estado_C <= cRpV; ciclos_C <= C_ROJO;
+          when cRpV      => estado_C <= cRpR; ciclos_C <= C_AMARILLO;
+          when cRpR      => estado_C <= cVpR; ciclos_C <= C_VERDE;
+        end case;
+      end if;
+
+      --=== Scrubber integrado ===--
+      voted := majority_state(estado_A, estado_B, estado_C);
+      estado_A <= voted;
+      estado_B <= voted;
+      estado_C <= voted;
+    end if;
+  end process;
+
+  ----------------------------------------------------------------
+  -- Salidas según estado votado
+  ----------------------------------------------------------------
+  with majority_state(estado_A, estado_B, estado_C) select
+    PMOD1_1_LS <= sVerde    when cVpR | cVpRCond,
+                   sAmarillo when cApR,
+                   sRojo     when others;
+
+  with majority_state(estado_A, estado_B, estado_C) select
+    PMOD1_2_LS <= sRojo     when cVpR | cVpRCond | cApR,
+                   sVerde    when cRpV,
+                   sRojo     when cRpR;
+
+  ----------------------------------------------------------------
+  -- Señales de diagnóstico
+  ----------------------------------------------------------------
+  PMOD1_3_LS <= '1' when (estado_A = estado_B and estado_B = estado_C) else '0';
+  PMOD1_5_LS <= clk_div;
+  PMOD1_6_LS <= '1' when estado_A = cVpR else '0';
+  PMOD1_7_LS <= '1' when estado_B = cVpR else '0';
+
+end rtl;

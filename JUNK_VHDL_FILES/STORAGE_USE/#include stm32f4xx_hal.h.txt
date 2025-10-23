@@ -1,0 +1,156 @@
+#include "stm32f4xx_hal.h"
+
+#define LED_PIN             GPIO_PIN_5
+#define LED_GPIO_PORT             GPIOA
+#define LED_GPIO_CLK_ENABLE
+__HAL_RCC_GPIOA_CLK_ENABLE()
+
+void LED_Init();
+  HAL_Init();
+  LED_Init();
+
+  while (1)
+  {
+    HAL_GPIO_TogglePin(LED_GPIO_PORT, LED_PIN);
+HAL_Delay(1000);
+ }
+}
+
+void LED_Init() {
+  LED_GPIO_CLK_ENABLE();
+  GPIO_InitTypeDef GPIO_InitStruct;
+  GPIO_InitStruct.Pin = LED_PIN;
+  GPIO_InitStruct.Mode =
+GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull =
+GPIO_PULLUP;
+  GPIO_InitStruct.Speed =
+HAL_GPIO_Init(LED_GPIO_PORT,
+&GPIO_InitStruct);
+}
+
+void SysTick_Handler(void) {
+  HAL_IncTick();
+
+ }
+}
+
+-- build option on the Project Tasks menú
+-- build button on PlatformIO Toolbar
+-- command Palette view: Command Pallete > PlatformIO: Build
+Task Menu Tasks: Run Task...> PlatformIO: Build
+cmd-alt-b / ctrl-alt-b hotkeys
+
+***********************************************
+
+[env:nucleo_l433rc_p]
+platform = ststm32
+board = nucleo_l433rc_p
+framework = stm32cube
+build_flags = -std=c++17
+
+-- main.cpp: main entry point
+-- other file uart.h
+-- uart.cpp
+#pragma once
+
+#include "stm32L4xx.h"
+
+namespace hal {
+public Uart {
+public:
+    Uart(USART_TypeDef* instance, uint32_t baudrate);
+    void init();
+    void sendChar(char c);
+    void sendString(const char* str);
+
+private:
+    USART_TypeDef* usart;
+    uint32_t baud;
+    void configureGPIO();
+};
+
+}// namespace hal
+
+class: Encapsulation of UART functionality into a reusable module
+namespace: Used to logically group the class under hal (Hardware Abstraction Layer)
+Constructor: Initializes UART instance and baud rate
+private: Hides internal implementation details
+Header guards via #pragma once
+
+-- uart logic
+#include "uart.h"
+
+namespace hal {
+
+Uart::Uart(USART_TypeDef* instance, uint32_t baudrate)
+     : usart(instance), baud(baudrate) {}
+
+void Uart::init() {
+    configureGPIO();
+ 
+    // Enable USART2 clock (APB1ENR1)
+    RCC->APB1ENR1 |= RCC_APB1ENR1_USART2EN;
+ 
+   // Set baud rate
+   usart->BRR = SystemCoreClock / baud;
+
+  // Enable transmitter
+  usart->CR1 |=USART_CR1_TE;
+
+  // Enable USART
+  usart->CR1 |= USART_CR1_UE;
+
+}
+
+void Uart::sendChar(char c) {
+    while (!(usart->ISR & USART_ISR_TXE));
+    usart->TDR = c;
+ }
+
+}
+
+void Uart::configureGPIO() {
+    // Enable GPIOA clock (AHB2ENR)
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
+
+  // COnfigure PA2 as Alternate Function mode
+  GPIO->MODER &= (0x3 << (2 * 2)); //clear bits
+  GPIO->MODER &= (0x2 << (2 * 2)); // Set AF mode (10);
+
+//Optional: set output type, speed, pull-up/down
+GPIOA->OTYPER &= (1 << 2); // Push-pull
+GPIOA->OSPEEDR |= (0x3 << (2 * 2)); //very hidgh speed
+GPIOA->PUPDR &= (0x3 << (2 * 2)); // No pull-up/down
+
+// Select AF7 for PA2 (USART2_TX)
+GPIO->AFR[0] &= (0xF << (4 * 2)); //Clear
+GPIO->AFR[0] |= (0x7 << (4 * 2)); // AF7
+}
+
+-- main.cpp
+#include "uart.h"
+
+using namespace hal;
+
+int main() {
+
+    static Uart uart(USART2, 19200);
+    uart.init();
+    uart.sendString("Hello World/r/n");
+
+    while (true) {
+       // Application loop
+
+  }
+}
+
+-- static for variables
+-- functions a file limits scope to that file
+static int internal counter = 0;
+
+-- Inline Functions 7
+inline void toggleLED() {
+   GPIO->ODR = (1 << 5);
+
+}

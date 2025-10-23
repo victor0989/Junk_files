@@ -1,0 +1,52 @@
+-- 3. Prototipo VHDL — controlador 
+--simple (antirradiación / toggler)
+
+-- reloj funciona desde FMC o CLK_125:
+-- puede ser clk normal 100mz conectado
+-- al reloj del procesador, sin sustituir ningún pin
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity anti_rad_ctrl is
+  Port (
+    sys_clk_p   : in std_logic;
+    sys_clk_n   : in std_logic;
+    GPIO_SW_S   : in std_logic;
+    PMOD0_1_LS  : out std_logic;
+);
+end anti_rad_ctrl;
+
+architecture Behavioral of anti_rad_ctrl is
+  signal clk125  : std_logic;
+  signal counter : unsigned(27 downto 0) := (others => '0');
+  signal led_state : std_logic := '0';
+begin
+
+-- Differential clock buffer
+clk_buf : entity work.IBUFDS
+   port map (
+     I   => sys_clk_p,
+     IB  => sys_clk_n,
+     0   => clk125
+);
+
+-- Simple toggler logic
+process(clk125)
+begin
+  if rising_edge(clk125) then
+    if GPIO_SW_S = '1' then
+      counter <= counter + 1;
+      if counter = x"7FFFFFF" then
+        counter <= (others => '0');
+        led_state <= not led_state;
+     end if;
+  end if;
+end if;
+end process;
+
+PMOD0_1_LS <= led_state;
+
+end Behavioral;
+

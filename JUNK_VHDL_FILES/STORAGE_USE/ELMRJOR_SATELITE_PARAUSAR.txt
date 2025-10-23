@@ -1,0 +1,298 @@
+# -*- coding:utf-8 -*-
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+doc_name = "CassiniUltra_HeavySatellite_RadiationShield"
+doc = App.ActiveDocument if App.ActiveDocument and App.ActiveDocument.Label == doc_name else App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+P = {
+    "tank_len": 9800.0, "tank_d": 5200.0, "hull_t": 55.0, "hull_outer_d": 6000.0, "liner_t": 22.0,
+    "tps_front_R": 3600.0, "tps_front_t": 160.0, "tps_offset": 680.0, "shoulder_len": 1300.0,
+    "shade_len": 1900.0, "shade_w": 1500.0, "shade_t": 110.0, "shade_r": 2800.0,
+    "strut_d": 300.0, "strut_r": 2150.0,
+    "bus_len": 3800.0, "bus_outer_d": 5800.0, "bus_inner_d": 5000.0,
+    "hga_R": 2400.0, "hga_t": 26.0, "hga_offset": 720.0, "hga_mast_len": 1600.0, "hga_mast_d": 240.0,
+    "rtg_box_l": 1500.0, "rtg_box_w": 820.0, "rtg_box_t": 360.0, "rtg_arm_len": 1450.0, "rtg_arm_d": 260.0,
+    "rtg_arm_offset_z": 1200.0,
+    "chamber_len": 3000.0, "chamber_d": 2500.0, "throat_d": 820.0, "exit_d": 5200.0, "nozzle_len": 4200.0,
+    "nozzle_mid_d": 3000.0, "nozzle_mid_x": 1200.0,
+    "gimbal_ring_ro": 2500.0, "gimbal_ring_ri": 2200.0, "gimbal_ring_t": 120.0,
+    "aft_shield_len": 1800.0, "aft_shield_d1": 5000.0, "aft_shield_d2": 3200.0,
+    "mast_len": 2800.0, "mast_d": 200.0, "mast_tip_R": 360.0, "mast_tip_t": 14.0,
+    "solar_len": 5200.0, "solar_w": 1800.0, "solar_t": 95.0, "solar2_len": 3600.0, "solar2_w": 1200.0, "solar2_t": 80.0,
+    "rad_len": 2800.0, "rad_w": 1100.0, "rad_t": 52.0, "rad_z": 1600.0,
+    "tank_dome_R": 2200.0, "tank_dome_t": 32.0, "bulkhead_t": 56.0,
+    "frame_ring_d": 3800.0, "frame_ring_t": 110.0, "frame_strut_d": 320.0, "frame_plinth_t": 70.0, "frame_step": 700.0,
+    "engine_bay_len": 2400.0, "pump_len": 1400.0, "pump_d": 1100.0,
+    "line_LH2_d": 360.0, "line_OX_d": 400.0, "line_clearance": 340.0, "line_bend_R": 520.0,
+    "rcs_thr_d": 420.0, "rcs_thr_len": 820.0, "rcs_ring_R": 3400.0, "rcs_count": 8,
+    "aux_thr_d": 1000.0, "aux_thr_len": 1600.0, "aux_thr_ring_R": 3600.0, "aux_thr_count": 8,
+    "rad_shield_inner_d": 6400.0, "rad_shield_t": 160.0, "rad_shield_gap": 80.0, "rad_shield_len": 6000.0,
+    "whipple_t": 45.0, "whipple_gap": 220.0,
+    "payload_bay_len": 2400.0, "payload_bay_d": 5200.0, "inst_bay_len": 1800.0, "inst_bay_d": 4200.0,
+    "bat_box_l": 1400.0, "bat_box_w": 900.0, "bat_box_t": 480.0,
+    "sga_R": 800.0, "sga_t": 16.0,
+    "mag_boom_len": 4200.0, "mag_boom_d": 160.0, "star_boom_len": 3200.0, "star_boom_d": 140.0,
+    "fin_len": 1400.0, "fin_w": 760.0, "fin_t": 110.0,
+    "ion_thr_d": 300.0, "ion_thr_len": 900.0, "ion_ring_R": 3000.0, "ion_count": 12,
+    "hall_thr_d": 600.0, "hall_thr_len": 1200.0, "hall_arm_len": 1600.0, "hall_arm_d": 180.0,
+    "robot_link_d": 180.0, "robot_link_len": 1200.0, "robot_count": 2, "end_eff_d": 260.0,
+    "parker_shield_R": 2400.0, "parker_shield_t": 160.0
+}
+
+X_AXIS = App.Vector(1,0,0); Y_AXIS = App.Vector(0,1,0); Z_AXIS = App.Vector(0,0,1)
+rot_to_x = lambda: App.Rotation(Y_AXIS,90)
+
+def add_obj(s, n):
+    o = doc.addObject("Part::Feature", n)
+    o.Shape = s
+    return o
+
+def color(o, rgb):
+    if hasattr(o, "ViewObject"):
+        o.ViewObject.ShapeColor = rgb
+
+def cyl_x(d, L, cx=0, cy=0, cz=0):
+    s = Part.makeCylinder(d/2.0, L)
+    s.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return s
+
+def cone_x(d1, d2, L, cx=0, cy=0, cz=0):
+    s = Part.makeCone(d1/2.0, d2/2.0, L)
+    s.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return s
+
+def circle_wire(d, cx, cy=0, cz=0):
+    return Part.Circle(App.Vector(cx,cy,cz), X_AXIS, d/2.0).toShape()
+
+def box_at(l, w, t, x, y, z, n, rgb=(0.5,0.5,0.5)):
+    b = Part.makeBox(l, w, t)
+    b.translate(App.Vector(x,y,z))
+    o = add_obj(b, n)
+    color(o, rgb)
+    return o
+
+def pipe_x(d, L, cx, cy, cz, n, rgb=(0.6,0.6,0.65)):
+    p = cyl_x(d, L, cx, cy, cz)
+    o = add_obj(p, n)
+    color(o, rgb)
+    return o
+
+# Baseline geometry
+tank_cx = 0.0
+tank = add_obj(cyl_x(P["tank_d"], P["tank_len"], cx=tank_cx), "Tank"); color(tank, (0.2,0.6,1.0))
+liner = add_obj(cyl_x(P["tank_d"]-2*P["liner_t"], P["tank_len"]-2*P["liner_t"], cx=tank_cx), "TankLiner"); color(liner,(0.15,0.45,0.85))
+hull = add_obj(cyl_x(P["hull_outer_d"], P["tank_len"], cx=tank_cx).cut(tank.Shape), "HullOuter"); color(hull,(0.12,0.28,0.5))
+
+bus_shell = add_obj(
+    cyl_x(P["bus_outer_d"], P["bus_len"], cx=tank_cx).cut(
+        cyl_x(P["bus_inner_d"], P["bus_len"]-2*P["hull_t"], cx=tank_cx)),
+    "BusDeck"); color(bus_shell,(0.35,0.35,0.42))
+
+# Forward TPS (Parker-style shield + shoulder)
+R, tps_t = P["tps_front_R"], P["tps_front_t"]
+cap_center_x = tank_cx + P["tank_len"]/2.0 + P["tps_offset"]
+sphere_out, sphere_in = Part.makeSphere(R), Part.makeSphere(R - tps_t)
+sphere_out.Placement = sphere_in.Placement = App.Placement(App.Vector(cap_center_x,0,0), App.Rotation())
+tps_box = Part.makeBox(2*R, 4*R, 4*R, App.Vector(cap_center_x, -2*R, -2*R))
+tps_front = add_obj(sphere_out.common(tps_box).cut(sphere_in.common(tps_box)), "TPS_Front"); color(tps_front,(0.08,0.08,0.08))
+
+shoulder_cx = cap_center_x - P["shoulder_len"]/2.0
+shoulder = add_obj(cone_x(2*R, P["hull_outer_d"], P["shoulder_len"], cx=shoulder_cx), "TPS_Shoulder"); color(shoulder,(0.1,0.1,0.12))
+
+# Parker shield frontal (flat annulus ahead of TPS)
+parker = add_obj(cyl_x(P["parker_shield_R"]*2, 200.0, cx=cap_center_x + P["tps_offset"] + 200.0), "ParkerShield"); color(parker,(0.15,0.15,0.20))
+
+# Reference center for payload/instruments (Cassini bus forward of tank)
+payload_cx = tank_cx + P["tank_len"]/2.0 - P["bus_len"]/2.0
+
+# High-Gain Antenna (HGA) dish + mast (Cassini-like dominant front dish)
+hga_center_x = cap_center_x - P["hga_offset"]
+hga_outer = Part.makeSphere(P["hga_R"])
+hga_inner = Part.makeSphere(P["hga_R"] - P["hga_t"])
+hga_outer.Placement = hga_inner.Placement = App.Placement(App.Vector(hga_center_x,0,0), App.Rotation())
+hga_cut_box = Part.makeBox(2*P["hga_R"], 4*P["hga_R"], 4*P["hga_R"], App.Vector(hga_center_x - P["hga_R"], -2*P["hga_R"], -2*P["hga_R"]))
+hga_dish = add_obj(hga_outer.common(hga_cut_box).cut(hga_inner.common(hga_cut_box)), "HGA_Dish"); color(hga_dish,(0.9,0.9,0.95))
+
+hga_mast = pipe_x(P["hga_mast_d"], P["hga_mast_len"], hga_center_x - P["hga_mast_len"]/2.0, 0, 0, "HGA_Mast", (0.75,0.75,0.78))
+
+# Instrument pallet (Cassini tenía un “remote sensing pallet” bajo el HGA)
+pallet = box_at(P["inst_bay_len"], P["inst_bay_d"], P["bulkhead_t"],
+                payload_cx, 0 - P["inst_bay_d"]/2.0, -P["hull_outer_d"]/2.0,
+                "InstPallet", (0.55,0.55,0.60))
+
+# RTGs en brazos opuestos (Cassini llevaba 3, aquí modelamos 2 simétricos por simplicidad)
+for side in (+1, -1):
+    arm = pipe_x(P["rtg_arm_d"], P["rtg_arm_len"],
+                 payload_cx - 400.0, side*(P["bus_outer_d"]/2.0 + 600.0), P["rtg_arm_offset_z"],
+                 f"RTG_Arm_{'Yp' if side>0 else 'Yn'}", (0.70,0.68,0.65))
+    rtg = box_at(P["rtg_box_l"], P["rtg_box_w"], P["rtg_box_t"],
+                 payload_cx - 400.0 + P["rtg_arm_len"], side*(P["bus_outer_d"]/2.0 + 600.0 - P["rtg_box_w"]/2.0),
+                 P["rtg_arm_offset_z"] - P["rtg_box_t"]/2.0,
+                 f"RTG_{'Yp' if side>0 else 'Yn'}", (0.80,0.55,0.30))
+
+# Magnetometer boom (largo y fino, sobresaliendo lateralmente)
+mag_boom = pipe_x(P["mag_boom_d"], P["mag_boom_len"],
+                  payload_cx + 300.0, (P["bus_outer_d"]/2.0 + 300.0), 300.0,
+                  "MagBoom_Yp", (0.7,0.75,0.8))
+
+# Star tracker boom (más corto, opuesto)
+star_boom = pipe_x(P["star_boom_d"], P["star_boom_len"],
+                   payload_cx + 200.0, -(P["bus_outer_d"]/2.0 + 200.0), 250.0,
+                   "StarBoom_Yn", (0.72,0.76,0.82))
+
+# RCS thrusters en anillo alrededor del bus
+for i in range(P["rcs_count"]):
+    ang = 2*math.pi * i / P["rcs_count"]
+    y = P["rcs_ring_R"] * math.cos(ang)
+    z = P["rcs_ring_R"] * math.sin(ang)
+    rcs = add_obj(cyl_x(P["rcs_thr_d"], P["rcs_thr_len"], cx=payload_cx - 300.0, cy=y, cz=z), f"RCS_{i:02d}")
+    color(rcs, (0.85,0.85,0.88))
+
+# Aux thrusters (course correction) en anillo mayor
+for i in range(P["aux_thr_count"]):
+    ang = 2*math.pi * i / P["aux_thr_count"]
+    y = P["aux_thr_ring_R"] * math.cos(ang)
+    z = P["aux_thr_ring_R"] * math.sin(ang)
+    aux = add_obj(cyl_x(P["aux_thr_d"], P["aux_thr_len"], cx=payload_cx - 900.0, cy=y, cz=z), f"AUX_{i:02d}")
+    color(aux, (0.80,0.80,0.84))
+
+# Hall thrusters laterales (para control fino/IE)
+hall_modules = []
+for side in (+1, -1):
+    hall = add_obj(cyl_x(P["hall_thr_d"], P["hall_thr_len"],
+                         cx=payload_cx + P["hall_arm_len"], cy=side*(P["hull_outer_d"]/2.0 + 900.0), cz=600.0),
+                   f"HallThr_{'Yp' if side>0 else 'Yn'}")
+    color(hall, (0.65,0.70,0.75))
+    hall_modules.append(hall)
+
+# Bus frames (anillos estructurales para “tocho”)
+frame_count = int(P["bus_len"] // P["frame_step"])
+for i in range(frame_count+1):
+    x = tank_cx - P["bus_len"]/2.0 + i*P["frame_step"]
+    ring = add_obj(circle_wire(P["frame_ring_d"], x), f"FrameRing_{i:02d}")
+    color(ring, (0.4,0.45,0.50))
+
+# Whipple + radiation shield alrededor del bus/hab
+shield_len = P["rad_shield_len"]
+shield_cx = payload_cx
+rad_shield_outer = add_obj(cyl_x(P["rad_shield_inner_d"] + 2*P["rad_shield_t"], shield_len, cx=shield_cx), "RadShieldOuter")
+rad_shield_inner = add_obj(cyl_x(P["rad_shield_inner_d"], shield_len - 2*P["rad_shield_gap"], cx=shield_cx), "RadShieldInner")
+rad_shell = add_obj(rad_shield_outer.Shape.cut(rad_shield_inner.Shape), "RadiationShell"); color(rad_shell, (0.2,0.2,0.24))
+
+whipple_outer = add_obj(cyl_x(P["rad_shield_inner_d"] + P["whipple_t"], shield_len, cx=shield_cx), "WhippleOuter")
+whipple_inner = add_obj(cyl_x(P["rad_shield_inner_d"], shield_len - 2*P["whipple_gap"], cx=shield_cx), "WhippleInner")
+whip_shell = add_obj(whipple_outer.Shape.cut(whipple_inner.Shape), "WhippleShell"); color(whip_shell, (0.3,0.32,0.35))
+
+# Engine bay + main nozzle at aft
+aft_cx = tank_cx - P["tank_len"]/2.0 - P["engine_bay_len"]/2.0
+gimbal_ring = add_obj(cyl_x(P["gimbal_ring_ro"]*2.0, P["gimbal_ring_t"], cx=aft_cx), "GimbalRing")
+color(gimbal_ring, (0.55,0.55,0.60))
+
+nozzle = add_obj(cone_x(P["exit_d"], P["throat_d"], P["nozzle_len"], cx=aft_cx - P["nozzle_len"]/2.0), "MainNozzle")
+color(nozzle, (0.25,0.25,0.28))
+
+# Solar arrays modestos (Cassini llevaba RTGs; estos sirven de plataforma sensores/radiadores)
+for side in (+1, -1):
+    solar = Part.makeBox(P["solar_len"], P["solar_w"], P["solar_t"])
+    solar.translate(App.Vector(payload_cx + 500.0, side*(P["hull_outer_d"]/2.0 + 2000.0), -400.0))
+    s_obj = add_obj(solar, f"Solar_{'Yp' if side>0 else 'Yn'}")
+    color(s_obj, (0.20,0.22,0.30))
+
+# Pequeñas antenas de media/baja ganancia alrededor del bus
+for i in range(4):
+    a = add_obj(cyl_x(280.0, 600.0, cx=payload_cx + 200.0, cy=(P["bus_outer_d"]/2.0 - 300.0)*((-1)**i), cz=200.0*((-1)**(i//2))),
+                f"LGA_{i:02d}")
+    color(a, (0.85,0.85,0.90))
+
+print("✅ Modelo CassiniUltra_HeavySatellite_RadiationShield ampliado (Cassini–Huygens style) y listo para FEM/CFD.")
+# --- Continuación: añadir sonda Huygens, soporte, detalles y cierre ---
+
+# Sonda Huygens (cuerpo toroidal + cono frontal), montada bajo el pallet de instrumentos
+huy_body_R = 1400.0
+huy_body_t = 220.0
+huy_cone_len = 1200.0
+huy_cone_d1 = 1600.0
+huy_cone_d2 = 400.0
+
+huy_center_x = payload_cx + 300.0
+huy_center_y = - (P["inst_bay_d"]/2.0) - 420.0
+huy_center_z = - P["hull_outer_d"]/2.0 - 100.0
+
+# Toro (cuerpo principal)
+huy_toro_outer = Part.makeTorus(huy_body_R, huy_body_t)
+huy_toro_outer.Placement = App.Placement(App.Vector(huy_center_x, huy_center_y, huy_center_z), App.Rotation(X_AXIS, 90))
+huy_toro = add_obj(huy_toro_outer, "Huygens_ToroBody"); color(huy_toro, (0.88,0.78,0.55))
+
+# Cono frontal (heatshield + aeroshell simplificado)
+huy_cone = cone_x(huy_cone_d1, huy_cone_d2, huy_cone_len, cx=huy_center_x + huy_cone_len/2.0,
+                  cy=huy_center_y, cz=huy_center_z)
+huy_cone_obj = add_obj(huy_cone, "Huygens_FrontCone"); color(huy_cone_obj, (0.75,0.62,0.45))
+
+# Placa de interfaz (adaptador a pallet)
+huy_adapter = box_at(380.0, 880.0, 60.0,
+                     huy_center_x - 520.0, huy_center_y - 440.0, huy_center_z - 30.0,
+                     "Huygens_Adapter", (0.65,0.65,0.68))
+
+# Struts de soporte Huygens al pallet (4 barras)
+for i in range(4):
+    dy = (-1 if i % 2 == 0 else 1) * 380.0
+    dz = (-1 if i // 2 == 0 else 1) * 280.0
+    support = pipe_x(140.0, 900.0,
+                     payload_cx + 150.0, huy_center_y + dy, huy_center_z + dz,
+                     f"Huygens_Strut_{i:02d}", (0.72,0.72,0.75))
+
+# Antena de media ganancia (MGA) off-axis cerca del pallet
+mga = add_obj(cyl_x(520.0, 800.0, cx=payload_cx + 600.0, cy=-P["bus_outer_d"]/2.0 + 500.0, cz=-200.0), "MGA")
+color(mga, (0.90,0.90,0.93))
+
+# Detalle: sensores y cámaras en el pallet (3 nodos)
+for i in range(3):
+    sx = payload_cx + 100.0 + i*260.0
+    sy = -P["inst_bay_d"]/2.0 + 220.0 + i*90.0
+    cam = box_at(180.0, 160.0, 140.0, sx, sy, -P["hull_outer_d"]/2.0 + 60.0, f"Cam_{i:02d}", (0.55,0.60,0.70))
+    lens = add_obj(cyl_x(120.0, 90.0, cx=sx + 90.0, cy=sy + 80.0, cz=-P["hull_outer_d"]/2.0 + 130.0), f"CamLens_{i:02d}")
+    color(lens, (0.20,0.25,0.30))
+
+# Estructura tipo "hex truss" bajo el bus (rigidez y look Cassini)
+truss_span = 2400.0
+for i in range(6):
+    ang = 2*math.pi*i/6
+    y = (P["bus_outer_d"]/2.0 + 300.0) * math.cos(ang)
+    z = (P["bus_outer_d"]/2.0 + 300.0) * math.sin(ang)
+    member = pipe_x(180.0, truss_span, payload_cx - truss_span/2.0, y, z, f"HexTruss_{i:02d}", (0.60,0.62,0.66))
+
+# Radiadores planos en X+, X- (placas)
+rad_dx = 3200.0
+rad1 = box_at(P["rad_len"], P["rad_w"], P["rad_t"],
+              payload_cx + 1200.0, (P["bus_outer_d"]/2.0 + 1600.0), P["rad_z"], "Radiator_Yp", (0.82,0.83,0.86))
+rad2 = box_at(P["rad_len"], P["rad_w"], P["rad_t"],
+              payload_cx + 1200.0, -(P["bus_outer_d"]/2.0 + 1600.0), P["rad_z"], "Radiator_Yn", (0.82,0.83,0.86))
+
+# Cableado grueso entre RTGs y bus (simboliza harness)
+for side in (+1, -1):
+    harness = add_obj(cyl_x(90.0, 1800.0, cx=payload_cx - 100.0,
+                            cy=side*(P["bus_outer_d"]/2.0 + 600.0), cz=P["rtg_arm_offset_z"] - 200.0),
+                      f"Harness_{'Yp' if side>0 else 'Yn'}")
+    color(harness, (0.20,0.20,0.22))
+
+# Guardas micrometeoritos bajo pallet (mini-whipple local)
+guard = add_obj(cyl_x(2200.0, 180.0, cx=payload_cx - 300.0, cy=-P["inst_bay_d"]/2.0, cz=-P["hull_outer_d"]/2.0 - 380.0),
+                "PalletGuard")
+color(guard, (0.28,0.30,0.33))
+
+# Etiquetas visuales: cambiar color del HGA y RTGs para destacar
+color(hga_dish, (0.95,0.95,0.98))
+for obj in doc.Objects:
+    if obj.Name.startswith("RTG_"):
+        color(obj, (0.85,0.58,0.32))
+
+# Limpieza visual: transparencia leve en cascarones de protección
+for n in ["RadiationShell", "WhippleShell"]:
+    o = doc.getObject(n)
+    if o and hasattr(o, "ViewObject"):
+        o.ViewObject.Transparency = 65
+
+# Final: recomputar y mensaje
+doc.recompute()
+print("🧩 Extensión completada: Huygens + soporte + detalles estructurales y térmicos integrados.")

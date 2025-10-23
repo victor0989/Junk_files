@@ -1,0 +1,119 @@
+
+Fault_GPIO	Tipo protegido que gestiona señal de fallo por GPIO
+Set_Fault	Activa la salida GPIO si hay fallo crítico
+Clear_Fault	Desactiva la salida GPIO
+Read_Interlock	Lee entrada GPIO para saber si hay interlock externo
+Is_Fault_Active	Consulta si la señal de fallo está activa
+
+-- Fault_GPIO.ads
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+package Fault_GPIO is
+   protected type Fault_Signal is
+      procedure Set_Fault;
+      procedure Clear_Fault;
+      procedure Read_Interlock (Active : out Boolean);
+      procedure Is_Fault_Active (Active : out Boolean);
+private
+   Fault_Active : Boolean := False;
+end Fault_Signal;
+end Fault_GPIO;
+
+-- Fault_GPIO.adb
+with System;
+
+package body Fault_GPIO is
+  -- Dirección simulada de GPIO (ajustar según STM32 gpio xxxxxfff)
+GPIO_BASE   : constant System.Address := System'To_Address (16#40020000#);
+GPI_ODR     : constant System.Address :=
+GPIO_BASE + 16#14; -- Output
+FAULT_PIN_MASK : constant := 2#0000_0001; -- Pin 0
+INTERLOCK_MASK : constant := 2#0000_0010#; -- Pin 1
+
+protected body Fault_Signal is
+
+   procedure Set_Fault is
+   begin
+      Fault_Active := True;
+      -- Activar pin de salida
+      GPIO_ODR.all := GPIO_ODR.all or FAULT_PIN_MASK;
+end Set_Fault;
+
+   procedure Clear_Fault is
+   begin
+      Fault_Active := False;
+      -- Desactivar pin de salida
+      GPIO_ODR.all := GPIO_ODR.all and not FAULT_PIN_MASK;
+end Clear_Fault;
+
+   procedure Read_Interlock (Active : out Boolean) is
+   begin
+      -- Leer pin de entrada
+      Active := (GPIO_IDR.all and INTERLOCK_MASK) /= 0;
+    end Read_Interlock;
+
+  procedure Is_Fault_Active (Active : out Boolean) is
+  begin
+     Active := Fault_Active;
+    end Is_Fault_Active;
+
+end Fault_Signal;
+end Fault_GPIO;
+
+-- Main_Control.adb
+with Fault_GPIO;
+
+procedure Main_Control is
+   …
+   GPIO_Fault : Fault_GPIO.Fault_Signal;
+   Interlock  : Boolean;
+begin
+   loop
+      -- Leer interlock externo
+      GPIO_Fault.Read_Interlock (Interlock);
+      if Interlock then
+         VC_H2.Set_Target (0); -- cierre inmediato
+         GPIO_Fault.Set_Fault;
+end if;
+
+-- Evaluar presión
+PF_H2.Evaluate (Fault);
+if Fault = Pressure_Fault.Critical or Fault = Pressure_Fault,Overpressure then
+   VC_H2.Set_Target (0);
+   GPIO_Fault.Set_Fault;
+else
+   GPIO_Fault.Clear_Fault;
+end if;
+
+delay until Next; --ojo
+end loop;
+end Main_Control;
+*****************************************************************************
+
+✅ Señal de fallo encapsulada en tipo protegido (Fault_Signal)
+
+✅ Acceso directo a registros (GPIO_ODR, GPIO_IDR)
+
+✅ Sin heap, sin tareas, sin interrupciones
+
+✅ Compatible con relés, LEDs, alarmas, enclavamientos físicos
+*****************************************************************************
+
+✅ Entrada GPIO permite interlock externo o reset manual
+sudo apt install gnat gcc-arm-none-eabi openocd stlink
+
+En Windows (con WSL):
+Instala WSL
+
+Usa Ubuntu 22.04 o 24.04
+
+Instala GNAT ARM y OpenOCD desde xPack
+***************************************************************************************
+Flashear
+
+gnatmake -P hydrogen_arm.gpr
+openocd -f interface/stlink.cfg -f target/stm32f4x.cfg \
+        -c "program bin/hydrogen_control_arm.elf verify reset exit"
+
+

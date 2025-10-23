@@ -1,0 +1,131 @@
+-- Target: ZCU106 (XCZU7EV)
+-- Reloj: CLK_125_P/N (125 MHz LVDS)
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity controlador_satelite is
+    port (
+        CLK_125_P    : in std_logic; -- Reloj diferencial positivo
+        CLK_125_N    : in
+std_logic; -- Reloj diferencial
+negativo
+        rst_n        : in
+std_logic; -- reset activo baja polaridad
+
+-- Entradas de usuario (interruptores DIP)
+GPIO_DIP_SW0 : in std_logic;
+GPIO_DIP_SW1 : in std_logic;
+GPIO_DIP_SW2 : in std_logic;
+GPIO_DIP_SW3 : in std_logic;
+GPIO_DIP_SW4 : in std_logic;
+GPIO_DIP_SW5 : in std_logic;
+GPIO_DIP_SW6 : in std_logic;
+GPIO_DIP_SW7 : in std_logic;
+
+-- Salidas de control (simbolizan actuadores o estados del satelite)
+estado_out  : out std_logic_vector(2 downto 0);
+alerta      : out std_logic
+);
+end controlador_satelite;
+
+architecture rtl of controlador_satelite is
+-- Definición de reloj interno
+(a partir del diferencial)
+signal clk   : std_logic;
+signal rst   : std_logic;
+
+-- Maquina de estados
+type estado_t is (IDLE, INIT, MONITOREO, AJUSTE, ALERTA);
+signal estado, siguiente_estado : estado_t;
+
+signal sensor_vector : std_logic_vector(7 downto 0);
+signal contador      : 
+unsigned(23 downto 0) := (others => '0');
+
+begin
+-- conversión reloj diferencial a un solo std_logic
+clk <= CLK_125_P xor CLK_125_N; -- simplificación valida para simulación
+rst <= not rst_n;
+
+-- Entradas combinadas
+sensor_vector <= GPIO_DIP_SW7 & GPIO_DIP_SW6 & GPIO_DIP_SW5 & GPIO_DIP_SW4 &
+GPIO_DIP_SW3 & GPIO_DIP_SW2 & GPIO_DIP_SW1 & GPIO_DIP_SW0;
+-- Proceso secuencial: registro de estado
+state_reg : process (clk, rst)
+begin
+    if rst = '1' then
+        estado <= IDLE;
+        contador <= (others => '0');
+    elsif rising_edge(clk) then
+        estado <= siguiente_estado;
+        if contador < 12500000 then -- 
+            contador <= contrador + 1;
+        else
+            contador <= (others => '0');
+        end if;
+      end process;
+
+-- Lógica combinacional: siguiente estado
+next_state_logic : process (estado, sensor_vector)
+begin
+    siguiente_estado <= estado; -- valor por defecto
+    case estado is
+        when IDLE =>
+            if sensor_vector(0) = '1' then
+                siguiente_estado <= INIT;
+end if;
+
+when MONITOREO =>
+    if sensor_vector(2) = '1' then
+        siguiente_estado <= AJUSTE;
+    elsif sensor_vector(7) = '1' then
+        siguiente_estado <= ALERTA;
+end if;
+
+when AJUSTE =>
+    if sensor_vector(3) = '1' then
+        siguiente_estado <= MONITOREO;
+end if;
+
+when ALERTA =>
+    if sensor_vector(4) = '1' then
+        siguiente_estado <= IDLE;
+end if;
+
+when others =>
+    siguiente_estado <= IDLE;
+end case;
+end process;
+
+-- Lógica de salida Moore + Mealy machine, secuencial 
+output_logic : process (estado, sensor_vector)
+begin
+    estado_out <= "000";
+    alerta <= '0';
+
+case estado is
+    when IDLE =>
+         estado_out <= "001";
+
+    when INIT =>
+        estado_out <= "010";
+
+    when MONITOREO =>
+        estado_out <= "011";
+        if sensor_vector(5) = '1' then
+            alerta <= '1';
+        end if;
+
+    when AJUSTE =>
+        estado_out <= "100";
+
+    when ALERTA =>
+        estado_out <= "111";
+        alerta <= '1';
+
+    when others =>
+        estado_out <= "000";
+end case;
+end process;
+end rtl;

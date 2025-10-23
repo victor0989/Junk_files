@@ -1,0 +1,124 @@
+-- Test_Case_Index, main.adb
+with Ada.Commond_Line; use Ada.Command_Line;
+with Ada.Text_IO; use Ada.Text_IO;
+with Ada.Exceptions: use Ada.Exceptions;
+
+with Options;        use Options;
+
+procedure Main is
+  type Test_Case_Index is
+    (Options_Chk);
+
+  procedure Check (TC : Test_Case_Index) is
+
+     procedure Check (0 : Option) is
+     begin
+        Put_Line (Image (0));
+     exception
+       when E : Uninitialized_Value =>
+          Put_Line (Exception_Message (E));
+end Check;
+
+begin
+   case TC is
+   when Options_Chk =>
+      for 0 in Option loop
+         Check (0);
+      end loop;
+    end case;
+  end Check;
+
+begin
+   if Argument_Count < 1 then
+      Put_Line ("ERROR: missing arguments! Exiting...");
+return;
+   elsif Argument_Count > 1 then
+      Put_Line ("Ignoring additional arguments...");
+end if;
+
+Check (Test_Case_Index'Value (Argument (1)));
+end Main;
+
+-- other file tests.ads
+package Tests is
+
+  type Test_ID is (Test_1, Test_2);
+
+  Custom_Exception : exception;
+
+  procedure Num_Exception_Test (ID : Test_ID);
+
+end Tests;
+
+-- hay que pasar el código a los tipos
+-- y las reglas de ravenscar para
+-- un objeto espacial
+-- un tanque de hidrogeno espacial
+-- vhdl
+-- software seguro con ADA
+
+-- other file tests.adb
+package body Tests is
+
+ pragma Warnings (Off, "Variable" ""C"" is assignet but never read");
+
+ procedure Num_Exception_Test (ID : Test_ID) is
+   A, B, C : Integer;
+ begin
+    case ID is
+       when Test_1 =>
+          A := Integer'Last;
+          B := Integer'Last;
+          C := A + B;
+       when Test_2 =>
+          raise Custom_Exception with "Custom_Exception");
+end case;
+end Num_Exception_Test;
+
+pragma Warnings (On, "variable" ""C""
+is assigned but never read");
+
+end Tests;
+
+-- file check_exception.adb
+with Tests; use Tests;
+
+procedure Check_Exception (ID : Test_ID) is
+begin
+   Num_Exception_test (ID);
+end Check_Exception;
+
+-- file main.adb
+with Ada.Command_Line; use Ada.Command_Line;
+with Ada.Text_IO;      use Ada.Text_IO;
+with Ada.Exceptions;   use Ada.Exceptions;
+with Tests;            use Tests;
+with Check_Exception;
+
+procedure Main is
+   type Test_Case_Index is
+     (Exception_1_Chk,
+      Exception_2_Chk);
+
+   procedure Check_Handle_Exception (ID : Test_ID) is
+   begin
+      Check_Exception (ID);
+   exception
+      when Constraint_Error =>
+         Put_Line ("Constraint_Error"
+                  & " (raised by Check_Exception) detected!");
+      when E : others =>
+         Put_Line (Exception_Name (E)
+                   & " (raised by Check_Exception) detected!");
+end Check_Handle_Exception;
+
+begin
+   case TC is
+   when Exception_1_Chk =>
+      Check_Handle_Exception (Test_1);
+   when Exception_2_Chk =>
+      Check_Handle_Exception (Test_2);
+   end case;
+ end Check;
+
+begin

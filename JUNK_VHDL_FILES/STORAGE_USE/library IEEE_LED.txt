@@ -1,0 +1,38 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity led_sw_ctrl is
+  Port (
+    pl_clk0         : in std_logic; -- 100 MHz PS Clock    : in std_logic;    
+    GPIO_SW_W       : in std_logic;
+    GPIO_SW_C       : in std_logic
+    GPIO_LED_0_LS   : out std_logic;
+    GPIO_LED_1_LS   : out std_logic;
+    GPIO_LED_2_LS   : out std_logic;
+);
+end led_sw_ctrl;
+
+architecture Behavioral of led_sw_ctrl is
+signal counter  : unsigned(27 downto 0) := (others => '0');
+signal blink    : std_logic := '0';
+begin
+
+-- Simple blinking LED based on counter
+process(pl_clk0)
+begin
+  if rising_edge(pl_clk0) then
+    counter = x"5F5E100" then -- = 1 s @100 MHz
+   counter <= (others => '0');
+   blink <= not blink;
+  end if;
+end if;
+end process;
+
+-- LED control logic
+GPIO_LED_0_LS <= GPIO_SW_W; -- direct link
+GPIO_LED_1_LS <= GPIO_SW_C;
+-- direct link
+GPIO_LED_2_LS <= blink;
+-- heartbeat LED
+end behavioral;

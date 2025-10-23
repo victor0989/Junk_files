@@ -1,0 +1,328 @@
+-- Raven decibels file
+-- decibels.ads
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+package Decibels is
+   subtype Decibel is Float;
+   subtype Factor is Float;
+
+   function To_Decibel (F : Factor) return Decibel;
+   function To_Factor (D : Decibel) return Factor;
+end Decibels;
+
+-- decibels.adb file
+with Ada.Numerics.Elementary_Functions; use Ada.Numerics.Elementary_Functions;
+
+package body Decibels is
+   function To_Decibel (F : Factor) return Decibel is
+   begin
+      if F <= 0.0 then
+         return -Float'Infinity; -- velor inválido
+      else
+         return 20.0 * Log (F, 10,0);
+      end if;
+    end To_Decibel;
+
+    function To_Factor (D : Decibel) return Factor is
+    begin
+       return 10.0 ** (D / 20.0);
+    end To_Factor;
+  end Decibels;
+
+-- signals.ads file
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+package Signal is
+   subtype Sig_Value is Float;
+   type Signal is array (Natural range <>) of Sig_Value;
+
+   function Rms (S : Signal) return Sig_Value;
+end Signals;
+
+-- signals.adb other file compiler
+with Ada.Numerics.Elementary_Functions; use Ada.Numerics.Elementary_Functions;
+
+package body Signals is
+   function Rms (S : Signal) return Sig_Value is
+      Sum : Long_Float := 0.0;
+   begin
+      for I in S'Range loop
+         Sum := Sum + Long_Float (S (I)) ** 2;
+      end loop;
+      return Sig_Value (Sqrt (Sum / Long_Float (S'Length)));
+end Rms;
+end Signals;
+
+-- signals-std.ads
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+package Signals.Std is
+   Sample_Rate : constant Float := 8000.0;
+
+  function Generate_Sine    (N : Positive; Freq : Float) return Signal;
+  function Generate_Square  (N : Positive) return Signal;
+  function Generate_Triangular (N :
+Positive) return Signal;
+end Signals.Std;
+
+-- signals-std.adb
+-- falta gpr
+
+with Ada.Numerics; use Ada.Numerics;
+with Ada.Numerics.Elementary_Functions; use Ada.Numerics.Elementary_Functions;
+
+package body Signals.Std is
+   function Generate_Sine (N : Positive; Freq : Float) return Signal is
+  S : Signal (0 .. N-1);
+begin
+   for I in S'Range loop
+      S (I) := Sin (2.0 * Pi + (Freq * Float (I) / Sample_Rate));
+end loop;
+return S;
+end Generate_Sine;
+
+function Generate_Square (N : Positive) return Signal is
+  S : Signal (0 .. N-1) := (others => 1.0);
+begin
+   return S;
+end Generate_Square;
+
+function Generate_Triangular (N : Positive) return Signal is
+  S       : Signal (0 .. N-1);
+  S_Half  : constant Natural :=S'Last / 2;
+begin
+   for I in S'First .. S_Half loop
+      S (I) := FLoat (I) / Float (S_Half);
+   end loop;
+   return S;
+ end Generate_Triangular;
+end Signals.Std;
+
+-- main.adb, main.ads
+
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Alloacations);
+
+with Ada.Command_Line; use Ada.Command_Line;
+with Ada.Text_IO; use Ada.Text_IO;
+with Inventory_Pkg; use Inventory_Pkg;
+
+procedure Main is
+  -- Array estático de floats (determinista)
+  F : array (1 .. 10) of Float :=(others => 42.42);
+
+  type Test_Case_Index is (Inventory_Chk);
+
+  procedure Display (Assets : Float) is
+     package F_IO is new Ada.Text_IO.Float_IO (Float);
+     use F_IO;
+begin
+   Put ("Assets: $");
+   Put (Assets, 1, 2, 0);
+   New_Line;
+end Display;
+
+procedure Check (TC : Test_Case_Index) is
+  I        : Item;
+  Assets   : Float := 0.0;
+begin
+   case TC is
+      when Inventory_Chk =>
+         I := Init (Ballpoint_Pen, 185, 0.15);
+         Add (Assets, I);
+         Display (Assets);
+         I := Init (Oil_Based_Pen_Marker, 100, 9.0);
+         Add (Assets, I);
+         Display (Assets);
+
+         I := Init (Feather_Quill_Pen, 2, 40.0);
+         Add (Assets, I);
+         Display (Assets);
+end case;
+end Check;
+
+begin
+   if Argument_Count < 1 then
+      Put_Line ("ERROR: missing arguments! Exiting...");
+      return;
+   elsif Argument_Count > 1 then  
+     Put_Line ("Ignoring additional arguments...");
+end if;
+
+Check (Test_Case_Index'Value (Argument (1)));
+end Main;
+
+--static, fix array
+--Assets is float, local
+-- new, no heap, confilctive heap
+--pragma Profile (Ravenscar); activa todas las restricciones de concurrencia.
+
+pragma Restrictions (No_Implicit_Heap_Allocations); asegura que no se use memoria dinámica.
+
+-- Ada tasks ravenscar restricted
+-- vhdl protected types,
+secure Access, determinism, static non Dynamic memory allocation, static points
+-- subtypes, arrays-fix, son fijos, sin heap, no dinamico
+-- no aborts, no select.
+
+-- Ada.Strings.Fixed
+-- other file, str_concat.ads
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+with Ada.Strings.Fixed; use Ada.Strings.Fixed;
+
+package Str_Concat is
+   Max_Length : constant := 256;
+   subtype Fixed_String is String (1 .. Max_Length);
+   type Fixed_String_Array is array (Positive range <>) of Fixed_String;
+
+   function Concat
+     (USA         : Fixed_String_Array;
+      Trim_Str    : 
+Boolean;
+      Add_Whitespace :
+Boolean) return String;
+end Str_Concat;
+
+-- str_concat.adb otro archivo para GNAT
+
+with Ada.Strings.Fixed; use Ada.Strings.Fixed;
+
+package body Str_Concat is
+   function Concat
+     (USA            : Fixed_String_Array;
+      Trim_Str       : Boolean;
+      Add_Whitespace : Boolean) return string;
+is
+   Buffer : Fixed_String := (others => ' ');
+   Pos    : Natural := 0;
+begin
+   for I in USA'Range loop
+      declare
+         Tmp   : String := USA (I);
+         Clean : String :=
+(if Trim_Str then Trim (Tmp, Both) else Tmp);
+begin
+   for J in Clean'Range loop
+      exit when Pos = Max_Length;
+      Pos             := Pos + 1;
+      Buffer (Pos)    := Clean (J);
+end loop;
+if Add_Whitespace and then I < USA'Last and then Pos < Max_Length
+    Pos    := Pos + 1;
+    Buffer (Pos) :) ' ';
+  end if;
+ end;
+end loop;
+return Buffer (1 .. Pos);
+end Concat;
+
+main_concat.adb
+
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+with Ada.Text_IO; use Ada.Text_IO;
+with Str_Concat;  use
+Str_Concat;
+
+procedure Main_Concat is
+   S : Fixed_String_Array :=
+      (1 => " Hello    ",
+       2 => " World    ",
+       3 => " Ravenscar");
+   R : String;
+begin
+   R :=  Concat (S, Trim_Str => True, Add_Whitespace => True);
+   Put_Line (R);
+end Main_Concat;
+
+-- decibel.ads
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+package Decibels is
+   subtype Decibel is Float;
+   subtype Factor  is Float;
+
+   function To_Decibel (F : Factor) return Decibel;
+   function To_Factor (D : Decibel) return Factor;
+end Decibels;
+
+-- decibels.adb other file
+with Ada.Numerics.Elementary_Functions; use Ada.Numerics.Elementary_Functions;
+
+package body Decibels is
+   function To_Decibels (F : Factor) return Decibel is
+   begin
+      if F <= 0.0 then
+         return -Float'Infinity;
+      else
+         return 20.0 * Log (F, 10.0);
+      end if;
+    end To_Decibel;
+
+    function To_Factor (D : Decibel) return Factor is
+    begin
+       return 10.0 ** (D / 20.0);
+end To_Factor;
+end Decibels;
+
+-- other file signals.ads
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+package Signals is
+   subtype Sig_Value is Float;
+   type Signal is array (Natural range <>) of Sig_Value;
+
+   function Rms (S : Signal) return Sig_Value;
+end Signals;
+
+-- signals.adb file
+with Ada.Numerics.Elementary_Functions; use Ada.Numerics.Elementary_Funcions;
+
+package body Signal is
+   function Rms (S : Signal) return Sig_Value is
+      Sum : Long_FLoat := 0.0;
+   begin
+      for I in S'Range loop
+         Sum := Sum + Long_Float (S (I)) ** 2;
+      end loop;
+      return Sig_Value (Sqrt (Sum / Long_Float (S'Length)));
+end Rms;
+end Signal;
+
+-- signals-std.ads
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+with Signals; use Signals;
+
+package Signals.Std is
+  Sample_Rate : constant Float := 8000.0;
+
+  function Generate_Sine   (N : Positive; Freq : Float) return Signal;
+  function Generate_Square 
+(N : Positive) return Signal;
+  function Generate_Triangular
+(N : Positive) return Signal;
+end Signals.Std;
+
+-- Signals-std.adb
+
+-- main_signals.adb
+-- justo al final en adaptación de código Ada
+-- faltan comandos Alire
+-- GPT comandos importantes ARM-baremtal.
+
+main_signals.adb
+pragma Profile (Ravenscar);
+pragma Restrictions (No_Implicit_Heap_Allocations);
+
+
+with Ada.Command_Line
