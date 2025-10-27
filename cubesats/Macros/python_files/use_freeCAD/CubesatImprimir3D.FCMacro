@@ -1,0 +1,78 @@
+import FreeCAD as App, FreeCADGui as Gui, Part
+
+doc = App.newDocument("Bisagras_Cierres_CubeSat")
+
+# =========================
+# PARÁMETROS GENERALES
+# =========================
+density = 1.24  # g/cm³ PLA
+clearance = 0.2 # holgura para impresión
+
+# =========================
+# 1️⃣ BISAGRA TIPO BARRIL
+# =========================
+plate_w, plate_h, plate_t = 25.0, 35.0, 3.5
+barrel_d, barrel_l = 5.0, plate_w
+hole_d = 3.2
+hole_offset_y = 8.0
+
+# Placa izquierda
+plate_left = Part.makeBox(plate_w, plate_t, plate_h)
+# Placa derecha
+plate_right = Part.makeBox(plate_w, plate_t, plate_h)
+plate_right.translate(App.Vector(0, barrel_l + clearance, 0))
+
+# Barril (cilindro horizontal)
+barrel = Part.makeCylinder(barrel_d/2, barrel_l + clearance, App.Vector(0, plate_t, plate_h/2 - barrel_d/2), App.Vector(0,1,0))
+
+# Agujeros en placas
+for z in [hole_offset_y, plate_h - hole_offset_y]:
+    cyl_l = Part.makeCylinder(hole_d/2, plate_t+2, App.Vector(plate_w/2, -1, z), App.Vector(0,1,0))
+    plate_left = plate_left.cut(cyl_l)
+    cyl_r = Part.makeCylinder(hole_d/2, plate_t+2, App.Vector(plate_w/2, barrel_l + plate_t - 1, z), App.Vector(0,1,0))
+    plate_right = plate_right.cut(cyl_r)
+
+hinge = plate_left.fuse(plate_right).fuse(barrel)
+obj_hinge = doc.addObject("Part::Feature", "Bisagra_Barril")
+obj_hinge.Shape = hinge
+
+# =========================
+# 2️⃣ CIERRE TIPO CLIP
+# =========================
+latch_base_w, latch_base_l, latch_base_t = 20.0, 40.0, 4.0
+arm_l, arm_w, arm_t = 50.0, 8.0, 4.0
+arm_hole_d = 8.0
+
+# Base del latch
+latch_base = Part.makeBox(latch_base_w, latch_base_t, latch_base_l)
+
+# Agujeros de fijación en base
+for z in [10.0, latch_base_l - 10.0]:
+    cyl = Part.makeCylinder(hole_d/2, latch_base_t+2, App.Vector(latch_base_w/2, -1, z), App.Vector(0,1,0))
+    latch_base = latch_base.cut(cyl)
+
+# Brazo del latch
+latch_arm = Part.makeBox(arm_w, arm_t, arm_l)
+latch_arm.translate(App.Vector((latch_base_w - arm_w)/2, latch_base_t, latch_base_l - arm_l))
+
+# Orificio en punta del brazo
+arm_hole = Part.makeCylinder(arm_hole_d/2, arm_t+2, App.Vector(latch_base_w/2, latch_base_t-1, latch_base_l - arm_l + arm_l - arm_w), App.Vector(0,1,0))
+latch_arm = latch_arm.cut(arm_hole)
+
+latch = latch_base.fuse(latch_arm)
+obj_latch = doc.addObject("Part::Feature", "Cierre_Clip")
+obj_latch.Shape = latch
+
+# =========================
+# INFO MASA/VOLUMEN
+# =========================
+for obj in [obj_hinge, obj_latch]:
+    vol_cm3 = obj.Shape.Volume / 1000.0
+    print(f"{obj.Label}: {vol_cm3:.2f} cm³, masa ≈ {vol_cm3*density:.1f} g")
+
+# =========================
+# VISTA
+# =========================
+doc.recompute()
+Gui.activeDocument().activeView().viewAxonometric()
+Gui.SendMsgToActiveView("ViewFit")

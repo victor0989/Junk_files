@@ -1,0 +1,91 @@
+import FreeCAD as App, Part, math
+
+# ===== PARÁMETROS =====
+circ_diam = 200.0   # Ø circunscrito del hexágono (mm)
+height = 200.0      # altura del bus (mm)
+wall_thk = 3.0      # espesor de pared (mm)
+tray_thk = 2.0
+tray_count = 3
+panel_side = 90.0
+panel_thk = 1.5
+hinge_d = 5.0
+whipple_gap = 30.0
+whipple_thk = 1.0
+
+doc = App.newDocument("HexBus")
+
+def add(shape, name, color=(0.8,0.8,0.8), trans=0):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    obj.ViewObject.ShapeColor = color
+    obj.ViewObject.Transparency = trans
+    return obj
+
+# ===== BUS HEXAGONAL HUECO =====
+R = circ_diam/2.0
+pts = []
+for i in range(6):
+    ang = math.radians(60*i)
+    pts.append(App.Vector(R*math.cos(ang), R*math.sin(ang), 0))
+wire = Part.makePolygon(pts+[pts[0]])
+face = Part.Face(wire)
+outer = face.extrude(App.Vector(0,0,height))
+inner_R = R - wall_thk/math.cos(math.radians(30))
+pts_in = []
+for i in range(6):
+    ang = math.radians(60*i)
+    pts_in.append(App.Vector(inner_R*math.cos(ang), inner_R*math.sin(ang), 0))
+wire_in = Part.makePolygon(pts_in+[pts_in[0]])
+face_in = Part.Face(wire_in)
+inner = face_in.extrude(App.Vector(0,0,height))
+shell = outer.cut(inner)
+add(shell, "HexBus", (0.6,0.6,0.65))
+
+# ===== BANDEJAS INTERNAS =====
+for i in range(tray_count):
+    zc = (i+1)*height/(tray_count+1)
+    tray = face_in.extrude(App.Vector(0,0,tray_thk))
+    tray.translate(App.Vector(0,0,zc - tray_thk/2))
+    add(tray, f"Tray_{i}", (0.75,0.75,0.78), 60)
+
+# ===== REFUERZOS TRIANGULARES =====
+gusset_size = 20.0
+tri = Part.makePolygon([App.Vector(0,0,0), App.Vector(gusset_size,0,0),
+                        App.Vector(0,gusset_size,0), App.Vector(0,0,0)])
+tri_face = Part.Face(tri)
+gusset = tri_face.extrude(App.Vector(0,0,wall_thk))
+# coloca 6 gussets en base
+for i in range(6):
+    ang = 60*i
+    g = gusset.copy()
+    g.rotate(App.Vector(0,0,0), App.Vector(0,0,1), ang)
+    g.translate(App.Vector(inner_R-wall_thk,0,0))
+    add(g, f"Gusset_{i}", (0.7,0.7,0.7))
+
+# ===== PANELES SOLARES + BISAGRAS =====
+for i in range(4):
+    ang = 90*i
+    # panel
+    pnl = Part.makeBox(panel_side, panel_thk, panel_side)
+    pnl.translate(App.Vector(-panel_side/2, wall_thk, -panel_side/2))
+    pnl.rotate(App.Vector(0,0,0), App.Vector(0,0,1), ang)
+    pnl.translate(App.Vector((R+panel_thk/2)*math.cos(math.radians(ang)),
+                              (R+panel_thk/2)*math.sin(math.radians(ang)),
+                              height/2))
+    add(pnl, f"Panel_{i}", (0.05,0.28,0.85))
+    # bisagra
+    hinge = Part.makeCylinder(hinge_d/2, panel_side)
+    hinge.rotate(App.Vector(0,0,0), App.Vector(1,0,0), 90)
+    hinge.rotate(App.Vector(0,0,0), App.Vector(0,0,1), ang)
+    hinge.translate(App.Vector(R*math.cos(math.radians(ang)),
+                                R*math.sin(math.radians(ang)),
+                                height/2))
+    add(hinge, f"Hinge_{i}", (0.5,0.5,0.5))
+
+# ===== WHIPPLE SHIELD =====
+whip_face = face.copy()
+whip = whip_face.extrude(App.Vector(0,0,whipple_thk))
+whip.translate(App.Vector(0,0,height/2 + whipple_gap))
+add(whip, "Whipple", (0.8,0.8,0.8), 30)
+
+doc.recompute()

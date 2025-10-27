@@ -1,0 +1,129 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import TechDraw
+import TechDrawGui
+import os
+
+DOC_NAME = "Sat_6U_Ortho"
+if App.ActiveDocument is not None:
+    try:
+        App.closeDocument(DOC_NAME)
+    except:
+        pass
+doc = App.newDocument(DOC_NAME)
+
+# -----------------------------
+# Parámetros globales (mm)
+# -----------------------------
+Lx, Ly, Lz = 100.0, 200.0, 300.0
+cx, cy, cz = 0.0, 0.0, 0.0
+
+z_nadir = -Lz/2.0
+z_zenith = +Lz/2.0
+
+t_face = 2.0
+t_surf = 5.0
+t_wing = 4.0
+
+# -----------------------------
+# Funciones de creación
+# -----------------------------
+def make_box(name, dx, dy, dz, center):
+    obj = doc.addObject("Part::Box", name)
+    obj.Length, obj.Width, obj.Height = dx, dy, dz
+    obj.Placement.Base = App.Vector(center[0]-dx/2, center[1]-dy/2, center[2]-dz/2)
+    return obj
+
+def make_cyl(name, r, h, center, axis=App.Vector(0,0,1)):
+    obj = doc.addObject("Part::Cylinder", name)
+    obj.Radius, obj.Height = r, h
+    obj.Placement.Base = App.Vector(center[0], center[1], center[2]-h/2)
+    return obj
+
+# -----------------------------
+# Cuerpo principal
+# -----------------------------
+body = make_box("Body6U", Lx, Ly, Lz, (cx, cy, cz))
+
+# Ala desplegada
+wing_len_y, wing_len_z = 200.0, 300.0
+wing = make_box("DeployedWing", t_wing, wing_len_y, wing_len_z, (Lx/2 + t_wing/2, 0, 0))
+# Traslación tras rotación
+wing.Placement = App.Placement(App.Vector(Lx/2, wing_len_y/2+10, 0), App.Rotation(App.Vector(0,0,1), 90))
+
+# -----------------------------
+# Componentes Nadir
+# -----------------------------
+patch = make_box("Patch915", 60, 60, t_surf, (0, 50, z_nadir-t_surf/2))
+downlink = make_cyl("Downlink", 15, t_surf, (-25, -40, z_nadir-t_surf/2))
+uplink   = make_cyl("Uplink",   15, t_surf, (25, -40, z_nadir-t_surf/2))
+nadir_sensor = make_cyl("EarthNadirSensor", 12.5, t_surf, (0, -90, z_nadir-t_surf/2))
+
+# -----------------------------
+# Componentes Zenith
+# -----------------------------
+thruster = make_cyl("Thruster", 20, 10, (0, 80, z_zenith+5))
+lrf = make_box("LaserRangeFinder", 40, 20, 20, (-25, -70, z_zenith+10))
+gyro = make_box("RateGyro3A", 25, 25, 10, (30, -20, z_zenith+5))
+star_tracker = make_box("StarTracker", 50, 30, 20, (-30, 20, z_zenith+10))
+
+# -----------------------------
+# Aviónica interna
+# -----------------------------
+stack = make_box("AvionicsStack", 100, 160, 220, (0,0,0))
+batt  = make_box("Batteries",     100,160,120, (0,0,-40))
+laser = make_box("LaserInternal",  60, 40, 60, (0,-30,40))
+
+# Agrupar
+group = doc.addObject("App::DocumentObjectGroup", "SAT_6U")
+for o in [body, wing, patch, downlink, uplink, nadir_sensor, thruster, lrf, gyro, star_tracker, stack, batt, laser]:
+    group.addObject(o)
+
+doc.recompute()
+
+# -----------------------------
+# TechDraw: página y plantilla
+# -----------------------------
+page = doc.addObject('TechDraw::DrawPage', 'Page')
+template = doc.addObject('TechDraw::DrawSVGTemplate', 'Template')
+
+base = App.getResourceDir()
+tpl_path = os.path.join(base, 'Mod', 'TechDraw', 'Templates', 'A4_Landscape.svg')
+template.Template = tpl_path
+page.Template = template
+
+# Proyecciones
+front_view = doc.addObject('TechDraw::DrawViewPart', 'FrontView')
+front_view.Source = [group]
+front_view.Direction = App.Vector(0,0,1)
+page.addView(front_view)
+
+top_view = doc.addObject('TechDraw::DrawViewPart', 'TopView')
+top_view.Source = [group]
+top_view.Direction = App.Vector(0,1,0)
+page.addView(top_view)
+
+right_view = doc.addObject('TechDraw::DrawViewPart', 'RightView')
+right_view.Source = [group]
+right_view.Direction = App.Vector(1,0,0)
+page.addView(right_view)
+
+doc.recompute()
+
+# -----------------------------
+# Exportar
+# -----------------------------
+out_dir = App.getUserAppDataDir()
+svg_path = os.path.join(out_dir, "sat_6u_ortho.svg")
+pdf_path = os.path.join(out_dir, "sat_6u_ortho.pdf")
+
+try:
+    TechDrawGui.exportPageAsSvg(page, svg_path)
+    TechDrawGui.exportPageAsPdf(page, pdf_path)
+    App.Console.PrintMessage(f"Exportado:\n  {svg_path}\n  {pdf_path}\n")
+except Exception as e:
+    App.Console.PrintError(f"Error al exportar: {e}\n")
+
+Gui.ActiveDocument.ActiveView.viewAxonometric()
+Gui.SendMsgToActiveView("ViewFit")

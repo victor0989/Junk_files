@@ -1,0 +1,299 @@
+# -*- coding: utf-8 -*-
+# FreeCAD macro: CubeSat 6U - Módulo de propulsión híbrido 3U “Destiny-style”
+# Ejes asumidos:
+#  - X = largo (0 -> proa, 366 -> popa)
+#  - Y = ancho (0..226.3)
+#  - Z = alto   (0..180)  Nota: para alojar Ø160 del housing, usamos Z=180 (centro Z=90).
+#
+# Nota de compatibilidad: si necesitas estrictamente Z=100 como en algunos 6U,
+# tendrás que reducir el diámetro del housing o reorientarlo; aquí se respeta Ø160.
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, math
+
+# ---------- Parámetros globales ----------
+DOC_NAME = "CubeSat6U_PropHibrido_3U"
+MAKE_REDUCED = False  # True = versión reducida de masa; False = versión demo (canónica)
+
+# Dimensiones 6U (referencia global)
+L_total = 366.0  # X
+W_total = 226.3  # Y
+H_total = 100.0  # Z externo del 6U (solo referencia)
+# Z del módulo 3U para este diseño (para alojar Ø160)
+H_module = 180.0  # Z "de trabajo" del módulo 3U (centro Z=90)
+
+# Caja del módulo 3U (volumen ocupado a lo largo de X)
+mod_X = 180.0   # largo del módulo en X
+mod_Y = W_total # usa ancho completo
+mod_Z = H_module# alto del módulo en Z para alojar housing
+mod_X_min = 186.0
+mod_X_max = mod_X_min + mod_X  # ~366
+
+# Housing (cilindro Destiny-style, eje a lo largo de X)
+housing_D = 160.0
+housing_R = housing_D/2.0
+housing_L = 180.0
+housing_shell_t = 4.0  # espesor a espesar hacia dentro
+
+# Tobera (cono truncado)
+noz_throat_D = 30.0
+noz_exit_D   = 120.0
+noz_L        = 150.0
+noz_offset_from_housing_front = 20.0  # inicio de loft dentro del housing
+
+# Anillos estéticos
+ring_section_h = 12.0  # alto (sección rectangular aprox)
+ring_section_d = 8.0   # prof. (radio menor del toro)
+ring_R_center  = 95.0  # radio al centro de sección
+ring_offsets   = [30.0, 70.0, 110.0, 150.0]  # desde la cara frontal interna del módulo
+
+# Bobinas superconductoras
+if MAKE_REDUCED:
+    coil_count = 3
+    coil_w = 30.0; coil_d = 30.0; coil_h = 80.0
+    coil_radius = 60.0
+else:
+    coil_count = 6
+    coil_w = 40.0; coil_d = 40.0; coil_h = 100.0
+    coil_radius = 65.0
+
+# Supercaps
+if MAKE_REDUCED:
+    supercaps = [(60.0, 60.0, 80.0)]  # 1 unidad
+else:
+    supercaps = [(60.0, 60.0, 80.0), (60.0, 60.0, 80.0)]  # 2 unidades
+
+# Tanque
+tank_D = 40.0
+tank_L = 100.0
+
+# Flange
+flange_D_ext = 90.0
+flange_thk   = 8.0
+flange_D_flow = 20.0
+flange_BC_D   = 70.0  # bolt circle
+flange_bolts  = 4
+bolt_D_for_M3 = 3.2   # holgura
+
+# Densidades (kg/m^3)
+rho_Al7075 = 2810.0
+rho_Al     = 2700.0
+rho_comp   = 1600.0
+rho_cer    = 3000.0
+rho_NbTi   = 8000.0
+
+# Utilidades
+def ensure_doc(name):
+    doc = App.getDocument(name) if name in App.listDocuments().keys() else App.newDocument(name)
+    return doc
+
+def mm3_to_m3(vol_mm3):
+    return vol_mm3 * 1e-9
+
+def set_density(obj, rho):
+    if not hasattr(obj, "Density"):
+        obj.addProperty("App::PropertyFloat", "Density", "Physical", "Density in kg/m^3")
+    obj.Density = rho
+
+def annotate(obj, label):
+    obj.Label = label
+
+def add_mass_property(obj):
+    vol = obj.Shape.Volume  # mm^3
+    vol_m3 = mm3_to_m3(vol)
+    rho = getattr(obj, "Density", 0.0)
+    mass = vol_m3 * rho
+    if not hasattr(obj, "Volume_m3"):
+        obj.addProperty("App::PropertyFloat", "Volume_m3", "Physical", "Volume in m^3")
+    if not hasattr(obj, "Mass_kg"):
+        obj.addProperty("App::PropertyFloat", "Mass_kg", "Physical", "Mass in kg")
+    obj.Volume_m3 = vol_m3
+    obj.Mass_kg = mass
+    return mass
+
+def report_total_mass(doc):
+    total = 0.0
+    lines = []
+    for obj in doc.Objects:
+        if hasattr(obj, "Mass_kg"):
+            total += obj.Mass_kg
+            lines.append(f"- {obj.Label}: {obj.Mass_kg:.3f} kg")
+    print("\n[MASS REPORT]")
+    for ln in lines:
+        print(ln)
+    print(f"Total: {total:.3f} kg\n")
+
+def cut_make_shell_from_cylinder(cyl_solid, thickness_in):
+    # Estimar radio y altura desde bounding box
+    bb = cyl_solid.BoundBox
+    r_ext = min(bb.YLength, bb.ZLength) / 2.0
+    h = bb.XLength
+    inner = Part.makeCylinder(r_ext - thickness_in, h, App.Vector(bb.XMin, bb.Center.y, bb.Center.z), App.Vector(1,0,0))
+    return cyl_solid.cut(inner)
+
+def make_nozzle_loft(throat_D, exit_D, length, x_front, y_center, z_center):
+    r1 = throat_D / 2.0
+    r2 = exit_D / 2.0
+    circle1 = Part.makeCircle(r1, App.Vector(x_front, y_center, z_center), App.Vector(1,0,0))
+    circle2 = Part.makeCircle(r2, App.Vector(x_front + length, y_center, z_center), App.Vector(1,0,0))
+    w1 = Part.Wire(circle1)
+    w2 = Part.Wire(circle2)
+    loft = Part.makeLoft([w1, w2], True)
+    return loft
+
+def bolt_circle_holes(center, bc_D, n, hole_D, thickness, axis="X"):
+    r = bc_D / 2.0
+    holes = []
+    for i in range(n):
+        ang = 2*math.pi * i/n
+        dy = r * math.cos(ang)
+        dz = r * math.sin(ang)
+        if axis == "X":
+            cyl = Part.makeCylinder(hole_D/2.0, thickness, App.Vector(center.x, center.y + dy, center.z + dz), App.Vector(1,0,0))
+        elif axis == "Z":
+            cyl = Part.makeCylinder(hole_D/2.0, thickness, App.Vector(center.x + dy, center.y + dz, center.z), App.Vector(0,0,1))
+        else:
+            cyl = Part.makeCylinder(hole_D/2.0, thickness, App.Vector(center.x + dy, center.y, center.z + dz), App.Vector(0,1,0))
+        holes.append(cyl)
+    return Part.makeCompound(holes)
+
+# ---------- Documento ----------
+doc = ensure_doc(DOC_NAME)
+
+# ---------- Caja “escena” del 6U ----------
+scene_box = Part.makeBox(L_total, W_total, H_total)
+scene_obj = doc.addObject("Part::Feature", "Scene_6U")
+scene_obj.Shape = scene_box
+scene_obj.ViewObject.DisplayMode = "Wireframe"
+annotate(scene_obj, "Scene_6U (wire)")
+
+# ---------- Caja del módulo 3U ----------
+mod_box = Part.makeBox(mod_X, mod_Y, mod_Z)
+mod_box.translate(App.Vector(mod_X_min, 0.0, 0.0))
+mod_obj = doc.addObject("Part::Feature", "Modulo3U_Box")
+mod_obj.Shape = mod_box
+annotate(mod_obj, "Modulo3U_Box 180x226.3x180")
+
+# ---------- Housing (cilindro eje X) ----------
+housing_cyl = Part.makeCylinder(housing_R, housing_L, App.Vector(mod_X_min, 0, 0), App.Vector(1,0,0))
+housing_cyl.translate(App.Vector(0.0, W_total/2.0, H_module/2.0))
+housing_shell = cut_make_shell_from_cylinder(housing_cyl, housing_shell_t)
+
+housing_obj = doc.addObject("Part::Feature", "Housing_Shell")
+housing_obj.Shape = housing_shell
+set_density(housing_obj, rho_Al7075)
+annotate(housing_obj, "Housing Al7075 shell t=4mm")
+
+# ---------- Tobera y liner ----------
+housing_front_X = mod_X_min
+noz_start_X = housing_front_X + noz_offset_from_housing_front
+nozzle_solid = make_nozzle_loft(noz_throat_D, noz_exit_D, noz_L, noz_start_X, W_total/2.0, H_module/2.0)
+housing_hollow = housing_obj.Shape.cut(nozzle_solid)
+
+liner_out = make_nozzle_loft(noz_throat_D + 4.0, noz_exit_D + 4.0, noz_L, noz_start_X, W_total/2.0, H_module/2.0)
+liner_solid = liner_out.cut(nozzle_solid)
+
+housing_final = Part.makeCompound([housing_hollow, liner_solid])
+housing_obj.Shape = housing_final
+doc.recompute()
+add_mass_property(housing_obj)
+
+shell_only = cut_make_shell_from_cylinder(housing_cyl, housing_shell_t)
+shell_obj = doc.addObject("Part::Feature", "Housing_Shell_Only")
+shell_obj.Shape = shell_only
+set_density(shell_obj, rho_Al7075)
+annotate(shell_obj, "Shell Al7075 t=4mm")
+add_mass_property(shell_obj)
+
+liner_obj = doc.addObject("Part::Feature", "Nozzle_Liner")
+liner_obj.Shape = liner_solid
+set_density(liner_obj, rho_cer)
+annotate(liner_obj, "Liner cerámico 2mm")
+add_mass_property(liner_obj)
+
+# ---------- Anillos ----------
+ring_objs = []
+for off in ring_offsets:
+    tor = Part.makeTorus(ring_R_center, ring_section_d/2.0, App.Vector(housing_front_X + off, W_total/2.0, H_module/2.0), App.Vector(1,0,0))
+    tor_obj = doc.addObject("Part::Feature", f"Ring_{int(off)}")
+    tor_obj.Shape = tor
+    set_density(tor_obj, rho_comp)
+    annotate(tor_obj, f"Ring comp {int(off)}mm")
+    add_mass_property(tor_obj)
+    ring_objs.append(tor_obj)
+
+# ---------- Bobinas ----------
+coil_objs = []
+angles = [0, 120, 240] if coil_count == 3 else [0, 60, 120, 180, 240, 300]
+for i, ang_deg in enumerate(angles):
+    ang = math.radians(ang_deg)
+    dy = coil_radius * math.cos(ang)
+    dz = coil_radius * math.sin(ang)
+    b = Part.makeBox(coil_w, coil_d, coil_h)
+    centerX = mod_X_min + housing_L/2.0
+    base = App.Vector(centerX - coil_w/2.0, W_total/2.0 + dy - coil_d/2.0, H_module/2.0 + dz - coil_h/2.0)
+    b.translate(base)
+    b_obj = doc.addObject("Part::Feature", f"Coil_{i+1}")
+    b_obj.Shape = b
+    set_density(b_obj, rho_NbTi)
+    annotate(b_obj, f"Coil NbTi {i+1}")
+    add_mass_property(b_obj)
+    coil_objs.append(b_obj)
+
+# ---------- Supercaps ----------
+sc_objs = []
+sc_x = mod_X_min + 10.0
+sc_y = 10.0
+sc_z = 10.0
+for i, dims in enumerate(supercaps):
+    sx, sy, sz = dims
+    sc = Part.makeBox(sx, sy, sz)
+    sc.translate(App.Vector(sc_x, sc_y + i*(sy + 8.0), sc_z))
+    sc_obj = doc.addObject("Part::Feature", f"Supercap_{i+1}")
+    sc_obj.Shape = sc
+    set_density(sc_obj, rho_comp)
+    annotate(sc_obj, f"Supercap {i+1}")
+    add_mass_property(sc_obj)
+    sc_objs.append(sc_obj)
+
+# ---------- Tanque ----------
+tank = Part.makeCylinder(tank_D/2.0, tank_L, App.Vector(mod_X_min + 40.0, W_total - 20.0 - tank_L, H_module/2.0 - tank_D/2.0), App.Vector(0,1,0))
+tank_obj = doc.addObject("Part::Feature", "Tank")
+tank_obj.Shape = tank
+set_density(tank_obj, rho_Al)
+annotate(tank_obj, "Tank Al Ø40x100")
+add_mass_property(tank_obj)
+
+# ---------- Flange ----------
+flange_base = Part.makeCylinder(flange_D_ext/2.0, flange_thk, App.Vector(mod_X_max - flange_thk, W_total/2.0, H_module/2.0), App.Vector(1,0,0))
+flow_hole = Part.makeCylinder(flange_D_flow/2.0, flange_thk + 2.0, App.Vector(mod_X_max - flange_thk - 1.0, W_total/2.0, H_module/2.0), App.Vector(1,0,0))
+holes = bolt_circle_holes(App.Vector(mod_X_max - flange_thk - 1.0, W_total/2.0, H_module/2.0), flange_BC_D, flange_bolts, bolt_D_for_M3, flange_thk + 2.0, axis="X")
+flange_shape = flange_base.cut(flow_hole).cut(holes)
+
+flange_obj = doc.addObject("Part::Feature", "Flange")
+flange_obj.Shape = flange_shape
+set_density(flange_obj, rho_Al7075)
+annotate(flange_obj, "Flange Ø90 t=8 BC Ø70 4xM3")
+add_mass_property(flange_obj)
+
+# ---------- Housing perforado ----------
+housing_cut = shell_only.cut(nozzle_solid)
+housing_cut_obj = doc.addObject("Part::Feature", "Housing_Cut")
+housing_cut_obj.Shape = housing_cut
+set_density(housing_cut_obj, rho_Al7075)
+annotate(housing_cut_obj, "Housing perforado por tobera")
+add_mass_property(housing_cut_obj)
+
+# ---------- Recompute y reporte ----------
+doc.recompute()
+report_total_mass(doc)
+
+# ---------- Vista ----------
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.ActiveDocument.ActiveView.fitAll()
+except Exception:
+    pass
+
+print("Macro completada. Usa MAKE_REDUCED=True para versión ligera (≤12 kg aprox.).")

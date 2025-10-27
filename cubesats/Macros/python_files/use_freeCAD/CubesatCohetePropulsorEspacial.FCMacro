@@ -1,0 +1,271 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, Draft
+
+DOC_NAME = "CubeSat_6U_DFD"
+if App.ActiveDocument is None or App.ActiveDocument.Name != DOC_NAME:
+    App.newDocument(DOC_NAME)
+doc = App.ActiveDocument
+
+# =========================
+# PARAMS (mm) — Ajustables
+# =========================
+# Estructura 6U
+BODY_LEN = 600.0
+BODY_W = 100.0
+BODY_H = 100.0
+
+# Paneles solares (stowed)
+SOLAR_LEN = 300.0
+SOLAR_W = 100.0
+SOLAR_T = 5.0
+
+# DFD (motor)
+DFD_CAM_D = 200.0       # diámetro exterior cámara
+DFD_CAM_L = 350.0       # longitud cámara
+DFD_NOZ_D_BASE = 200.0  # base (lado cámara)
+DFD_NOZ_D_EXIT = 100.0  # salida
+DFD_NOZ_L = 150.0       # longitud tobera
+
+# Tanques laterales (cilindros huecos)
+TANK_D = 100.0
+TANK_L = 250.0
+TANK_E = 4.0
+# Posicionamiento tanques: centrados para que el extremo trasero coincida con X=600
+# El cilindro irá a lo largo de X; colocamos el centro a X = BODY_LEN - TANK_L/2
+TANK_CENTER_X = BODY_LEN - TANK_L/2.0
+# Desplazamiento lateral simétrico alrededor del centro del cuerpo (Y=50)
+TANK_OFFSET_Y = 35.0  # distancia del centro del cuerpo (50 mm) hacia cada lateral
+TANK_CENTER_Y_POS = (BODY_W/2.0) + TANK_OFFSET_Y  # lado +Y
+TANK_CENTER_Y_NEG = (BODY_W/2.0) - TANK_OFFSET_Y  # lado -Y
+# Altura del centro
+TANK_CENTER_Z = 50.0
+
+# Radiadores (stowed)
+RAD_L = 500.0
+RAD_W = 200.0
+RAD_T = 10.0
+# Ubicación aproximada stowed (pegados a cara superior y lat/trasera)
+RAD1_POS = App.Vector(BODY_LEN - RAD_T, BODY_W + 2.0, BODY_H - RAD_W)  # fuera, arriba-derecha
+RAD2_POS = App.Vector(BODY_LEN - RAD_T, -RAD_W - 2.0, 0.0)             # fuera, abajo-izquierda
+
+# Internals (cajas y cilindros)
+# Avionics
+AV_X, AV_Y, AV_Z = 180.0, 90.0, 40.0
+AV_POS = App.Vector(50.0, 10.0, 30.0)
+
+# Battery
+BAT_X, BAT_Y, BAT_Z = 140.0, 80.0, 30.0
+BAT_POS = App.Vector(240.0, 10.0, 5.0)
+
+# Payload
+PAY_X, PAY_Y, PAY_Z = 160.0, 90.0, 50.0
+PAY_POS = App.Vector(380.0, 5.0, 25.0)
+
+# Reaction wheels (cilindros Ø60 × 20; altura = 20 a lo largo de Z por simplicidad)
+RW_D, RW_H = 60.0, 20.0
+# Centros (ajusta si quieres alinear con CG exacto)
+RWX_CENTER = App.Vector(300.0, 20.0, 50.0)  # "x-axis wheel"
+RWY_CENTER = App.Vector(300.0, 80.0, 50.0)  # "y-axis wheel"
+RWZ_CENTER = App.Vector(320.0, 50.0, 80.0)  # "z-axis wheel"
+
+# Paneles solares (cuatro, stowed, dos por lado)
+# Los coloco pegados a las caras laterales, repartidos a lo largo de X
+SOLAR_OFFSET = 2.0  # separación respecto a la piel
+SOLAR1_POS = App.Vector(50.0, -SOLAR_T - SOLAR_OFFSET, 0.0)          # lado -Y
+SOLAR2_POS = App.Vector(350.0, -SOLAR_T - SOLAR_OFFSET, 0.0)         # lado -Y
+SOLAR3_POS = App.Vector(50.0, BODY_W + SOLAR_OFFSET, 0.0)            # lado +Y
+SOLAR4_POS = App.Vector(350.0, BODY_W + SOLAR_OFFSET, 0.0)           # lado +Y
+
+# =========================
+# Helpers
+# =========================
+def clear_if_exists(name):
+    obj = doc.getObject(name)
+    if obj:
+        doc.removeObject(name)
+
+def add_shape(name, shape):
+    clear_if_exists(name)
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = shape
+    return o
+
+def make_box(name, x, y, z, pos=App.Vector(0,0,0)):
+    shape = Part.makeBox(x, y, z)
+    obj = add_shape(name, shape)
+    obj.Placement.Base = pos
+    return obj
+
+def make_cyl(name, radius, height, axis='Z', center=App.Vector(0,0,0)):
+    cyl = Part.makeCylinder(radius, height)  # eje Z por defecto (altura a lo largo de Z)
+    obj = add_shape(name, cyl)
+    # Colocar para que el centro geométrico sea 'center'
+    # Si eje Z: base.z = center.z - height/2; x/y = center.x/y
+    if axis == 'Z':
+        obj.Placement.Base = App.Vector(center.x, center.y, center.z - height/2.0)
+    elif axis == 'X':
+        # rotar 90° alrededor de Y para alinear altura con X
+        obj.Placement.Rotation = App.Rotation(App.Vector(0,1,0), 90)
+        # En eje X, la "altura" se reparte +/- height/2 en X
+        obj.Placement.Base = App.Vector(center.x - height/2.0, center.y, center.z)
+    elif axis == 'Y':
+        obj.Placement.Rotation = App.Rotation(App.Vector(1,0,0), -90)
+        obj.Placement.Base = App.Vector(center.x, center.y - height/2.0, center.z)
+    return obj
+
+def make_hollow_cyl_along_x(name, r_ext, length, thickness, center):
+    # Cilindro exterior e interior (para crear un tubo con tapas planas)
+    outer = Part.makeCylinder(r_ext, length)  # eje Z; rotaremos luego
+    r_int = max(r_ext - thickness, 0.1)
+    # Para dejar tapas de 4 mm, el cilindro interior es más corto y está desplazado
+    inner_len = max(length - 2.0*thickness, 0.1)
+    inner = Part.makeCylinder(r_int, inner_len)
+
+    # Colocar el interior centrado dentro del exterior (eje Z): base.z = thickness
+    outer_obj = outer
+    inner_vec = App.Vector(0,0,thickness)
+    inner_obj = inner
+    inner_obj.translate(inner_vec)
+
+    tube = outer_obj.cut(inner_obj)
+    # Rotar a lo largo de X
+    rot = App.Rotation(App.Vector(0,1,0), 90)
+    tube.Placement = App.Placement(App.Vector(0,0,0), rot)
+    # Colocar para que el centro sea 'center'
+    # En eje X, el sólido va de x = center.x - length/2 a center.x + length/2
+    tube.translate(App.Vector(center.x - length/2.0, center.y, center.z))
+    return add_shape(name, tube)
+
+def make_cone_truncated_along_x(name, r1, r2, length, base_x, base_y, base_z):
+    # Cono tronco eje Z por defecto, altura=length
+    cone = Part.makeCone(r1, r2, length)
+    # Rotar 90° alrededor de Y para eje X
+    rot = App.Rotation(App.Vector(0,1,0), 90)
+    cone.Placement = App.Placement(App.Vector(0,0,0), rot)
+    # Base del cono en X = base_x
+    cone.translate(App.Vector(base_x, base_y, base_z))
+    return add_shape(name, cone)
+
+def fuse_objects(name, objs):
+    sh = objs[0].Shape
+    for o in objs[1:]:
+        sh = sh.fuse(o.Shape)
+    return add_shape(name, sh)
+
+# =========================
+# Construcción
+# =========================
+
+# 1) Estructura externa (caja simple; puedes luego convertir a “shell” si quieres piel delgada)
+body = make_box("Body_6U", BODY_LEN, BODY_W, BODY_H, App.Vector(0,0,0))
+
+# 2) Motor DFD: cámara (cilindro) + tobera (cono truncado)
+# Cámara: eje X, centrada en Y/Z = mitad del cuerpo, base en X=BODY_LEN
+cam_center = App.Vector(BODY_LEN + DFD_CAM_L/2.0, BODY_W/2.0, BODY_H/2.0)
+dfd_cam = make_cyl("DFD_Camera", DFD_CAM_D/2.0, DFD_CAM_L, axis='X', center=cam_center)
+
+# Tobera: base pegada al extremo de la cámara (en X = BODY_LEN + DFD_CAM_L)
+noz_base_x = BODY_LEN + DFD_CAM_L
+noz = make_cone_truncated_along_x(
+    "DFD_Nozzle",
+    DFD_NOZ_D_BASE/2.0,
+    DFD_NOZ_D_EXIT/2.0,
+    DFD_NOZ_L,
+    noz_base_x, BODY_W/2.0, BODY_H/2.0
+)
+
+# 3) Tanques laterales huecos (a lo largo de X)
+tank1 = make_hollow_cyl_along_x("Tank_Right",
+                                TANK_D/2.0, TANK_L, TANK_E,
+                                App.Vector(TANK_CENTER_X, TANK_CENTER_Y_POS, TANK_CENTER_Z))
+tank2 = make_hollow_cyl_along_x("Tank_Left",
+                                TANK_D/2.0, TANK_L, TANK_E,
+                                App.Vector(TANK_CENTER_X, TANK_CENTER_Y_NEG, TANK_CENTER_Z))
+
+# 4) Radiadores (stowed como cajas)
+rad1 = make_box("Radiator_1", RAD_T, RAD_W, RAD_L, RAD1_POS)  # espesor en X para fácil despliegue
+# Gira para que su largo vaya en Z y ancho en Y ya está por dimensiones
+rad2 = make_box("Radiator_2", RAD_T, RAD_W, RAD_L, RAD2_POS)
+
+# 5) Paneles solares (stowed)
+sol1 = make_box("Solar_1", SOLAR_LEN, SOLAR_T, SOLAR_W, SOLAR1_POS)
+sol2 = make_box("Solar_2", SOLAR_LEN, SOLAR_T, SOLAR_W, SOLAR2_POS)
+sol3 = make_box("Solar_3", SOLAR_LEN, SOLAR_T, SOLAR_W, SOLAR3_POS)
+sol4 = make_box("Solar_4", SOLAR_LEN, SOLAR_T, SOLAR_W, SOLAR4_POS)
+
+# 6) Internals
+avionics = make_box("Avionics", AV_X, AV_Y, AV_Z, AV_POS)
+battery  = make_box("Battery",  BAT_X, BAT_Y, BAT_Z, BAT_POS)
+payload  = make_box("Payload",  PAY_X, PAY_Y, PAY_Z, PAY_POS)
+
+# Reaction wheels (eje Z; altura = RW_H; centra en Z=... y en X/Y exactos)
+rwx = make_cyl("RW_X", RW_D/2.0, RW_H, axis='Z', center=RWX_CENTER)
+rwy = make_cyl("RW_Y", RW_D/2.0, RW_H, axis='Z', center=RWY_CENTER)
+rwz = make_cyl("RW_Z", RW_D/2.0, RW_H, axis='Z', center=RWZ_CENTER)
+
+# 7) Conjunto para vista (Compound)
+all_objs = [body, dfd_cam, noz, tank1, tank2, rad1, rad2, sol1, sol2, sol3, sol4,
+            avionics, battery, payload, rwx, rwy, rwz]
+compound = fuse_objects("Assembly", all_objs)
+
+# =========================
+# Propiedades útiles (material/densidad como metadata)
+# =========================
+def set_mat(obj, name, density):
+    try:
+        obj.addProperty("App::PropertyString","Material","Physical","Material name")
+        obj.addProperty("App::PropertyFloat","Density","Physical","Density kg/m^3")
+        obj.Material = name
+        obj.Density = float(density)
+    except Exception:
+        pass
+
+set_mat(body, "Al7075-T6", 2810)
+for s in [sol1, sol2, sol3, sol4]:
+    set_mat(s, "CompositeCarbon", 1600)
+set_mat(dfd_cam, "Inconel718", 8190)
+set_mat(noz, "CarbonComposite", 1600)
+for t in [tank1, tank2]:
+    set_mat(t, "Al6061", 2700)
+for r in [rad1, rad2]:
+    set_mat(r, "Cu/Al Composite", 4000)
+set_mat(avionics, "Al7075 + PCB", 2810)
+set_mat(battery, "Li-ion pack", 2500)
+set_mat(payload, "Mixed Al/Optics", 2810)
+for rw in [rwx, rwy, rwz]:
+    set_mat(rw, "Steel", 7800)
+
+doc.recompute()
+
+# =========================
+# TechDraw: proyecciones ortográficas
+# =========================
+try:
+    page = doc.addObject('TechDraw::DrawPage', 'Page')
+    # Intentar cargar plantilla estándar
+    tmpl = doc.addObject('TechDraw::DrawSVGTemplate', 'Template')
+    tmpl.Template = App.getResourceDir() + 'Mod/TechDraw/Templates/A3_Landscape.svg'
+    page.Template = tmpl
+
+    # Crear proyección múltiple (frontal, superior, lateral, isométrica)
+    view = doc.addObject('TechDraw::DrawViewPart', 'AssemblyView')
+    view.Source = [compound]
+    page.addView(view)
+
+    pg = doc.addObject('TechDraw::DrawProjGroup', 'Orthos')
+    pg.Anchor = view
+    pg.Direction = (0.0, 1.0, 0.0)  # vista frontal (mirando -Y); ajusta según prefieras
+    pg.addProjection("Top")
+    pg.addProjection("Right")
+    pg.addProjection("Left")
+    pg.addProjection("Bottom")
+    pg.addProjection("Rear")
+    page.addView(pg)
+    doc.recompute()
+except Exception:
+    pass
+
+Gui.activeDocument().activeView().viewIsometric()
+Gui.SendMsgToActiveView("ViewFit")

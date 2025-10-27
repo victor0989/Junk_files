@@ -1,0 +1,136 @@
+import FreeCAD as App, FreeCADGui as Gui, Part
+
+doc = App.newDocument("CubeSat_1U_Kit")
+
+# =========================
+# PARÁMETROS GENERALES
+# =========================
+density = 1.24  # g/cm³ (PLA)
+corner_radius = 2.0
+
+# =========================
+# 1️⃣ ESTRUCTURA EXTERNA 1U
+# =========================
+outer_x, outer_y, height = 100.0, 100.0, 113.5
+rail_w = 8.5
+frame_t = 3.0
+hole_d = 3.2
+hole_offset_z = 10.0
+
+# Raíles
+rails = []
+positions = [
+    App.Vector(0, 0, 0),
+    App.Vector(outer_x - rail_w, 0, 0),
+    App.Vector(0, outer_y - rail_w, 0),
+    App.Vector(outer_x - rail_w, outer_y - rail_w, 0)
+]
+for p in positions:
+    box = Part.makeBox(rail_w, rail_w, height)
+    box.translate(p)
+    rails.append(box)
+
+# Marcos superior e inferior
+outer_frame_bottom = Part.makeBox(outer_x, outer_y, frame_t)
+inner_frame_bottom = Part.makeBox(outer_x - 2*rail_w, outer_y - 2*rail_w, frame_t)
+inner_frame_bottom.translate(App.Vector(rail_w, rail_w, 0))
+frame_bottom = outer_frame_bottom.cut(inner_frame_bottom)
+
+outer_frame_top = Part.makeBox(outer_x, outer_y, frame_t)
+inner_frame_top = Part.makeBox(outer_x - 2*rail_w, outer_y - 2*rail_w, frame_t)
+inner_frame_top.translate(App.Vector(rail_w, rail_w, 0))
+outer_frame_top.translate(App.Vector(0, 0, height - frame_t))
+inner_frame_top.translate(App.Vector(0, 0, height - frame_t))
+frame_top = outer_frame_top.cut(inner_frame_top)
+
+# Unión
+frame_shape = rails[0]
+for r in rails[1:]:
+    frame_shape = frame_shape.fuse(r)
+frame_shape = frame_shape.fuse(frame_bottom).fuse(frame_top)
+
+# Taladros M3
+def drill_holes_in_rail(rail_origin_vec):
+    holes = []
+    zs = [hole_offset_z, height - hole_offset_z]
+    for zc in zs:
+        cx = rail_origin_vec.x + rail_w/2.0
+        cy = rail_origin_vec.y + rail_w/2.0
+        cyl_x = Part.makeCylinder(hole_d/2.0, outer_x, App.Vector(0, cy, zc), App.Vector(1,0,0))
+        holes.append(cyl_x)
+        cyl_y = Part.makeCylinder(hole_d/2.0, outer_y, App.Vector(cx, 0, zc), App.Vector(0,1,0))
+        holes.append(cyl_y)
+    return holes
+
+for p in positions:
+    for h in drill_holes_in_rail(p):
+        frame_shape = frame_shape.cut(h)
+
+obj_frame = doc.addObject("Part::Feature", "Estructura_Externa")
+obj_frame.Shape = frame_shape
+
+# =========================
+# 2️⃣ TAPA REFORZADA
+# =========================
+tapa_t = 5.0
+rib_w = 8.0
+tapa = Part.makeBox(outer_x, outer_y, tapa_t)
+rib1 = Part.makeBox(rib_w, outer_y, tapa_t)
+rib1.translate(App.Vector((outer_x-rib_w)/2, 0, 0))
+rib2 = Part.makeBox(outer_x, rib_w, tapa_t)
+rib2.translate(App.Vector(0, (outer_y-rib_w)/2, 0))
+tapa = tapa.fuse(rib1).fuse(rib2)
+
+# Agujeros en tapa
+for x in [hole_d*2, outer_x - hole_d*2]:
+    for y in [hole_d*2, outer_y - hole_d*2]:
+        cyl = Part.makeCylinder(hole_d/2, tapa_t+2, App.Vector(x, y, 0), App.Vector(0,0,1))
+        tapa = tapa.cut(cyl)
+
+obj_tapa = doc.addObject("Part::Feature", "Tapa_Reforzada")
+obj_tapa.Shape = tapa
+
+# =========================
+# 3️⃣ BANDEJA INTERNA
+# =========================
+tray_w = outer_x - 2*rail_w - 0.2
+tray_d = outer_y - 2*rail_w - 0.2
+tray_t = 2.5
+tray = Part.makeBox(tray_w, tray_d, tray_t)
+tray.translate(App.Vector(rail_w+0.1, rail_w+0.1, 11.0))
+
+obj_tray = doc.addObject("Part::Feature", "Bandeja_Interna")
+obj_tray.Shape = tray
+
+# =========================
+# 4️⃣ SOPORTE DE ANTENAS
+# =========================
+bracket_w = 20.0
+bracket_l = outer_x
+bracket_t = 4.0
+bracket = Part.makeBox(bracket_l, bracket_w, bracket_t)
+bracket.translate(App.Vector(0, (outer_y-bracket_w)/2, height))
+
+# Antenas (solo visual)
+ant_l = 550.0
+ant_r = 1.5
+ant1 = Part.makeCylinder(ant_r, ant_l, App.Vector(0, outer_y/2, height), App.Vector(-1,0,0))
+ant2 = Part.makeCylinder(ant_r, ant_l, App.Vector(outer_x, outer_y/2, height), App.Vector(1,0,0))
+bracket = bracket.fuse(ant1).fuse(ant2)
+
+obj_bracket = doc.addObject("Part::Feature", "Soporte_Antenas")
+obj_bracket.Shape = bracket
+
+# =========================
+# INFO DE MASA Y VOLUMEN
+# =========================
+for obj in [obj_frame, obj_tapa, obj_tray, obj_bracket]:
+    vol_cm3 = obj.Shape.Volume / 1000.0
+    print(f"{obj.Label}: {vol_cm3:.2f} cm³, masa ≈ {vol_cm3*density:.1f} g")
+
+# =========================
+# VISTA
+# =========================
+doc.recompute()
+Gui.activeDocument().activeView().viewAxonometric()
+Gui.SendMsgToActiveView("ViewFit")

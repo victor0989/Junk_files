@@ -1,0 +1,227 @@
+# -*- coding: utf-8 -*-
+# FreeCAD macro: CubeSat 6U - Módulo de propulsión híbrido 3U “Destiny-style” (versión optimizada)
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, math
+
+# ------------------ Parámetros globales ------------------
+DOC_NAME = "CubeSat6U_PropHibrido_3U_Light"
+
+# Dimensiones globales
+L_total = 366.0
+W_total = 226.3
+H_total = 100.0
+
+# Módulo 3U
+mod_X = 180.0
+mod_Y = W_total
+mod_Z = 180.0
+mod_X_min = 186.0
+mod_X_max = mod_X_min + mod_X
+
+# Housing
+housing_D = 160.0
+housing_R = housing_D/2.0
+housing_L = 180.0
+housing_t_mid = 3.0
+housing_t_hot_add = 1.0
+hot_band_len = 30.0
+noz_throat_D = 30.0
+noz_exit_D   = 120.0
+noz_L        = 150.0
+noz_offset_from_housing_front = 20.0
+housing_front_X = mod_X_min
+noz_start_X = housing_front_X + noz_offset_from_housing_front
+hot_band_center_X = noz_start_X + 10.0
+hot_band_start_X = max(housing_front_X, hot_band_center_X - hot_band_len/2.0)
+
+# Liner segmentado
+liner_t_hot = 1.6
+liner_t_warm = 1.3
+liner_hot_len = 60.0
+
+# Anillos
+ring_section_h = 12.0
+ring_t_wall = 1.5
+ring_R_center = 95.0
+ring_offsets = [30.0, 70.0, 110.0, 150.0]
+
+# Bobinas
+coil_count = 3
+coil_w = 30.0; coil_d = 30.0; coil_h = 80.0
+coil_radius = 60.0
+
+# Supercaps
+supercaps = [(60.0,60.0,80.0)]
+
+# Tanque
+tank_D = 40.0
+tank_L = 100.0
+
+# Flange
+flange_D_ext = 80.0
+flange_thk = 6.0
+flange_D_flow = 20.0
+flange_BC_D = 70.0
+flange_bolts = 4
+bolt_D_for_M3 = 3.2
+
+# Densidades
+rho_Al7075 = 2810.0
+rho_Al = 2700.0
+rho_comp = 1600.0
+rho_cer = 3000.0
+rho_NbTi = 8000.0
+
+# ------------------ Utilidades ------------------
+def ensure_doc(name):
+    return App.getDocument(name) if name in App.listDocuments().keys() else App.newDocument(name)
+
+def mm3_to_m3(vol_mm3):
+    return vol_mm3 * 1e-9
+
+def set_density(obj, rho):
+    if not hasattr(obj, "Density"):
+        obj.addProperty("App::PropertyFloat", "Density", "Physical", "Density in kg/m^3")
+    obj.Density = rho
+
+def annotate(obj, label):
+    obj.Label = label
+
+def add_mass_property(obj):
+    vol = getattr(obj.Shape, "Volume", 0.0)
+    vol_m3 = mm3_to_m3(vol)
+    rho = getattr(obj, "Density", 0.0)
+    mass = vol_m3 * rho
+    if not hasattr(obj, "Volume_m3"):
+        obj.addProperty("App::PropertyFloat", "Volume_m3", "Physical", "Volume in m^3")
+    if not hasattr(obj, "Mass_kg"):
+        obj.addProperty("App::PropertyFloat", "Mass_kg", "Physical", "Mass in kg")
+    obj.Volume_m3 = vol_m3
+    obj.Mass_kg = mass
+    return mass
+
+def report_total_mass(doc):
+    total = 0.0
+    lines = []
+    for obj in doc.Objects:
+        if hasattr(obj, "Mass_kg") and obj.Mass_kg > 0:
+            total += obj.Mass_kg
+            lines.append(f"- {obj.Label}: {obj.Mass_kg:.3f} kg")
+    print("\n[MASS REPORT]")
+    for ln in lines:
+        print(ln)
+    print(f"Total: {total:.3f} kg\n")
+
+def bolt_circle_holes(center, bc_D, n, hole_D, thickness):
+    r = bc_D / 2.0
+    holes = []
+    for i in range(n):
+        ang = 2*math.pi*i/n
+        dy = r*math.cos(ang)
+        dz = r*math.sin(ang)
+        cyl = Part.makeCylinder(hole_D/2.0, thickness+2.0,
+                                App.Vector(center.x - 1.0, center.y + dy, center.z + dz),
+                                App.Vector(1,0,0))
+        holes.append(cyl)
+    return Part.makeCompound(holes)
+
+def make_ring_sweep(x_pos, r_center=95.0, h=12.0, t=1.5, y0=113.15, z0=90.0):
+    # Edge path y sweep
+    circle = Part.makeCircle(r_center, App.Vector(x_pos, y0, z0), App.Vector(1,0,0))
+    path = Part.Wire(circle)
+    rect = Part.makeRectangle(h, t, App.Vector(x_pos, y0-h/2.0, z0-t/2.0))
+    face = Part.Face(rect)
+    try:
+        pipe = face.makePipeShell([path], True, True)
+    except:
+        # fallback: solo retorna recto si falla sweep
+        pipe = face.extrude(App.Vector(1,0,0)*2)
+    return pipe
+
+def make_loft_circular(D1, D2, length, x_front, y_center, z_center):
+    c1 = Part.makeCircle(D1/2.0, App.Vector(x_front, y_center, z_center), App.Vector(1,0,0))
+    c2 = Part.makeCircle(D2/2.0, App.Vector(x_front + length, y_center, z_center), App.Vector(1,0,0))
+    w1 = Part.Wire(c1)
+    w2 = Part.Wire(c2)
+    loft = Part.makeLoft([w1, w2], True)
+    return loft
+
+def loft_shell_segment(D1_in, D2_in, t, seg_len, x_front, y0, z0):
+    D1_out = D1_in + 2*t
+    D2_out = D2_in + 2*t
+    inner = make_loft_circular(D1_in, D2_in, seg_len, x_front, y0, z0)
+    outer = make_loft_circular(D1_out, D2_out, seg_len, x_front, y0, z0)
+    return outer.cut(inner)
+
+def shell_full_length(R_ext, L, t):
+    outer = Part.makeCylinder(R_ext, L, App.Vector(mod_X_min, 0, 0), App.Vector(1,0,0))
+    inner = Part.makeCylinder(R_ext - t, L, App.Vector(mod_X_min, 0, 0), App.Vector(1,0,0))
+    return outer.cut(inner)
+
+def sleeve_band(R_ext, x_start, band_len, t_add):
+    outer = Part.makeCylinder(R_ext, band_len, App.Vector(x_start, 0, 0), App.Vector(1,0,0))
+    inner = Part.makeCylinder(R_ext - t_add, band_len, App.Vector(x_start, 0, 0), App.Vector(1,0,0))
+    return outer.cut(inner)
+
+def flange_light(x_end, d_ext=80.0, thk=6.0, d_flow=20.0, bc=70.0, bolts=4, bolt_d=3.2):
+    base = Part.makeCylinder(d_ext/2.0, thk, App.Vector(x_end-thk, W_total/2.0, H_total/2.0), App.Vector(1,0,0))
+    flow = Part.makeCylinder(d_flow/2.0, thk+2.0, App.Vector(x_end-thk-1.0, W_total/2.0, H_total/2.0), App.Vector(1,0,0))
+    shape = base.cut(flow)
+    holes = bolt_circle_holes(App.Vector(x_end-thk, W_total/2.0, H_total/2.0), bc, bolts, bolt_d, thk)
+    shape = shape.cut(holes)
+    return shape
+
+# ------------------ Documento ------------------
+doc = ensure_doc(DOC_NAME)
+
+# Caja módulo 3U
+mod_box = Part.makeBox(mod_X, mod_Y, mod_Z, App.Vector(mod_X_min, 0, 0))
+mod_obj = doc.addObject("Part::Feature", "Modulo3U_Box")
+mod_obj.Shape = mod_box
+annotate(mod_obj, "Modulo3U_Box 180x226.3x180")
+
+# Housing
+shell_base = shell_full_length(housing_R, housing_L, housing_t_mid)
+band_start = max(housing_front_X, hot_band_start_X)
+band_len = min(hot_band_len, (housing_front_X+housing_L)-band_start)
+sleeve = sleeve_band(housing_R, band_start, band_len, housing_t_hot_add)
+housing_shell_var = Part.makeCompound([shell_base, sleeve])
+housing_obj = doc.addObject("Part::Feature", "Housing_Shell_Var")
+housing_obj.Shape = housing_shell_var
+set_density(housing_obj, rho_Al7075)
+annotate(housing_obj, "Housing 7075 t=3mm + banda caliente +1mm")
+add_mass_property(housing_obj)
+
+# Tobera
+D_mid = noz_throat_D + (noz_exit_D - noz_throat_D)*(liner_hot_len/noz_L)
+liner_hot = loft_shell_segment(noz_throat_D, D_mid, liner_t_hot, liner_hot_len, noz_start_X, W_total/2.0, H_total/2.0)
+liner_warm = loft_shell_segment(D_mid, noz_exit_D, liner_t_warm, noz_L - liner_hot_len, noz_start_X+liner_hot_len, W_total/2.0, H_total/2.0)
+liner_total = Part.makeCompound([liner_hot, liner_warm])
+liner_obj = doc.addObject("Part::Feature", "Nozzle_Liner")
+liner_obj.Shape = liner_total
+set_density(liner_obj, rho_cer)
+annotate(liner_obj, "Liner cerámico segmentado 1.6/1.3 mm")
+add_mass_property(liner_obj)
+
+# Hueco de tobera
+nozzle_void = make_loft_circular(noz_throat_D, noz_exit_D, noz_L, noz_start_X, W_total/2.0, H_total/2.0)
+housing_cut = housing_obj.Shape.cut(nozzle_void)
+housing_cut_obj = doc.addObject("Part::Feature", "Housing_Cut")
+housing_cut_obj.Shape = housing_cut
+set_density(housing_cut_obj, rho_Al7075)
+annotate(housing_cut_obj, "Housing con hueco de tobera")
+add_mass_property(housing_cut_obj)
+
+# Recompute y reporte
+doc.recompute()
+report_total_mass(doc)
+
+# Vista
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.ActiveDocument.ActiveView.fitAll()
+except:
+    pass
+
+print("Macro lista: versión corregida FreeCAD 0.20+")
