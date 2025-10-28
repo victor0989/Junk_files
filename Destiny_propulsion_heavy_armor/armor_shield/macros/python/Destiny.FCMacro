@@ -1,0 +1,381 @@
+# -*- coding: utf-8 -*-
+# Macro FreeCAD: Destiny Propulsion - Variante Blindada (Cabina integrada)
+# Autor: Víctor + Copilot/GPT (variante solicitada)
+# Objetivo: variante menos puntiaguda, cabina integrada en el fuselaje, reactor y tobera extensos,
+#          alerones cortos y angulares, propulsores secundarios laterales, trusses con detalle industrial,
+#          blindajes tipo "FEM Solar Parker Probe" (metadatos para análisis FEM).
+# Unidades: mm, eje longitudinal = X
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+# Documento
+doc_name = "Destiny_Propulsion_Blindado"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# ========================
+# Parámetros ajustados
+# ========================
+P = {
+    # Fuselaje (no puntiagudo: morro redondeado/blunt)
+    "nose_len": 700.0,
+    "nose_base_d": 700.0,
+    "nose_cap_d": 520.0,   # bocel frontal - genera transicion suave
+    "mid_len": 1300.0,
+    "mid_d": 1000.0,
+    "rear_len": 1200.0,
+    "rear_d": 1400.0,
+    "hull_t": 20.0,
+
+    # Cabina integrada
+    "cockpit_w": 900.0,
+    "cockpit_h": 420.0,
+    "cockpit_l": 700.0,
+    "cockpit_x0": 600.0,  # posición inicial (integrada al fuselaje)
+    "cockpit_blend_r": 60.0,  # radio de blend con la piel
+
+    # Reactor + boquilla extendida (énfasis visual)
+    "reactor_d": 1100.0,
+    "reactor_l": 1800.0,
+    "reactor_cx": 2800.0,
+    "nozzle_throat_d": 420.0,
+    "nozzle_exit_d": 1600.0,
+    "nozzle_l": 1500.0,
+    "nozzle_cx": 3500.0,
+    "nozzle_fillet_r": 80.0,
+
+    # Trusses reforzados (detalle industrial)
+    "truss_n": 6,
+    "truss_tube_w": 140.0,
+    "truss_R_attach": 760.0,
+    "truss_len": 900.0,
+    "truss_rib_n": 8,
+    "truss_rib_th": 8.0,
+
+    # Alerones cortos y angulares
+    "wing_root_w": 700.0,
+    "wing_tip_w": 180.0,
+    "wing_chord": 420.0,
+    "wing_thickness": 30.0,
+    "wing_sweep_deg": 18.0,
+
+    # Propulsores secundarios laterales (tanques/boquillas)
+    "side_thruster_d": 420.0,
+    "side_thruster_l": 900.0,
+    "side_thruster_x": 2400.0,
+    "side_thruster_y": 1200.0,
+    "side_thruster_z": -80.0,
+
+    # Blindajes tipo "Solar Parker Probe" (meta: capas y metadatos para FEM)
+    "shield_outer_t": 120.0,   # capa externa TPS-like
+    "shield_gap": 25.0,        # gap entre reactor y shield
+    "shield_inner_t": 80.0,    # capa interna de moderador
+    "shield_extend": 400.0,    # extensión por cada lado del reactor
+
+    # Tanques auxiliares
+    "tank_d": 320.0,
+    "tank_l": 700.0,
+    "tank_cx": 1600.0,
+    "tank_cy": 420.0,
+    "tank_cz": -120.0,
+
+    # Tren simplificado
+    "leg_L_fold": 420.0,
+    "leg_foot_d": 200.0,
+
+}
+
+# Ejes
+X_AXIS = App.Vector(1,0,0)
+Y_AXIS = App.Vector(0,1,0)
+Z_AXIS = App.Vector(0,0,1)
+
+# Utilidades
+def rot_to_x():
+    return App.Rotation(Y_AXIS, 90)
+
+def add_obj(shape, label):
+    obj = doc.addObject("Part::Feature", label)
+    obj.Shape = shape
+    return obj
+
+# Creadores con orientación en X
+
+def make_cyl_x(d, L, cx=0.0, cy=0.0, cz=0.0, label="CylX"):
+    r = d/2.0
+    cyl = Part.makeCylinder(r, L)
+    cyl.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return add_obj(cyl, label)
+
+
+def make_tube_x(d_o, d_i, L, cx=0.0, cy=0.0, cz=0.0, label="TubeX"):
+    o = Part.makeCylinder(d_o/2.0, L)
+    i = Part.makeCylinder(d_i/2.0, L + 0.2)
+    tube = o.cut(i)
+    tube.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return add_obj(tube, label)
+
+
+def make_conical_segment_x(d1, d2, L, cx=0.0, cy=0.0, cz=0.0, label="ConeX"):
+    cone = Part.makeCone(d1/2.0, d2/2.0, L)
+    cone.Placement = App.Placement(App.Vector(cx - L/2.0, cy, cz), rot_to_x())
+    return add_obj(cone, label)
+
+
+def make_box(w, d, h, cx=0.0, cy=0.0, cz=0.0, label="Box"):
+    b = Part.makeBox(w, d, h)
+    b.Placement = App.Placement(App.Vector(cx - w/2.0, cy - d/2.0, cz - h/2.0), App.Rotation())
+    return add_obj(b, label)
+
+# =========================
+# 1) Fuselaje - forma blunt / transicion suave
+# =========================
+# Morro: cap/cilinder/transect con bocel para evitar punta
+nose_cap = Part.makeSphere(P["nose_cap_d"]/2.0)
+nose_cap.Placement = App.Placement(App.Vector(P["nose_cap_d"]/2.0, 0, 0), App.Rotation())
+# Cono corto invertido para transición
+nose_trans = Part.makeCone(P["nose_base_d"]/2.0, P["nose_cap_d"]/2.0, P["nose_len"] - P["nose_cap_d"]/2.0)
+nose_trans.Placement = App.Placement(App.Vector(P["nose_len"]/2.0, 0, 0), rot_to_x())
+# Eje medio y popa
+mid = Part.makeCylinder(P["mid_d"]/2.0, P["mid_len"]) 
+mid.Placement = App.Placement(App.Vector(P["nose_len"], 0, 0), rot_to_x())
+rear = Part.makeCylinder(P["rear_d"]/2.0, P["rear_len"]) 
+rear.Placement = App.Placement(App.Vector(P["nose_len"] + P["mid_len"], 0, 0), rot_to_x())
+
+fuse_fuselage = nose_cap.fuse(nose_trans).fuse(mid).fuse(rear)
+hull_outer = fuse_fuselage
+# Crear grueso (hull shell) mediante offset interior
+try:
+    hull_inner = hull_outer.makeOffsetShape(-P["hull_t"], 0.01, join=2, fill=True)
+    hull_shell_shape = hull_outer.cut(hull_inner)
+    hull = add_obj(hull_shell_shape, "Hull_Shell_Blindado")
+except Exception:
+    hull = add_obj(hull_outer, "Hull_Shell_Blindado_Fallback")
+
+# =========================
+# 2) Cabina integrada (sustracción y blend)
+# =========================
+# Volumen de cabina: forma alargada, recortada desde el hull y fusionada con interior para efecto integrado
+cockpit_box = Part.makeBox(P["cockpit_l"], P["cockpit_w"], P["cockpit_h"]) 
+cockpit_box.Placement = App.Placement(App.Vector(P["cockpit_x0"], -P["cockpit_w"]/2.0, -P["cockpit_h"]/2.0), App.Rotation())
+# Crear un "blend" frontal: esfera achatada para integracion visual
+blend_sphere = Part.makeSphere(P["cockpit_blend_r"]) 
+blend_sphere.Placement = App.Placement(App.Vector(P["cockpit_x0"] - P["cockpit_blend_r"]/2.0, 0, 0), App.Rotation())
+
+cockpit_vol = cockpit_box.fuse(blend_sphere)
+# Extraccion de la piel para crear un interior (cabina hueca)
+try:
+    ck_inner = cockpit_vol.makeOffsetShape(-12.0, 0.01, join=2, fill=True)
+    cockpit_shell = cockpit_vol.cut(ck_inner)
+    cockpit_obj = add_obj(cockpit_shell, "Cockpit_Integrated")
+except Exception:
+    cockpit_obj = add_obj(cockpit_vol, "Cockpit_Integrated_Fallback")
+
+# Cortar la cabina del casco (hull) y fusionar ligeramente para efecto integrado (quita aristas marcadas)
+try:
+    hull_cut = hull.Shape.cut(cockpit_vol)
+    hull_obj_cut = add_obj(hull_cut, "Hull_With_Cockpit_Cut")
+except Exception:
+    hull_obj_cut = hull
+
+# =========================
+# 3) Reactor y boquilla (largo, núcleo visual)
+# =========================
+reactor_core = Part.makeCylinder(P["reactor_d"]/2.0, P["reactor_l"]) 
+reactor_core.Placement = App.Placement(App.Vector(P["reactor_cx"] - P["reactor_l"]/2.0, 0, 0), rot_to_x())
+reactor_obj = add_obj(reactor_core, "Reactor_Core")
+
+# Boquilla extendida: perfil cónico con anillos y filete
+nozzle = Part.makeCone(P["nozzle_throat_d"]/2.0, P["nozzle_exit_d"]/2.0, P["nozzle_l"]) 
+nozzle.Placement = App.Placement(App.Vector(P["nozzle_cx"] - P["nozzle_l"]/2.0, 0, 0), rot_to_x())
+nozzle_obj = add_obj(nozzle, "Magnetic_Nozzle_Extended")
+
+# Anillos estructurales alrededor de la boquilla (detalle estético + soporte)
+rings = []
+ring_count = 5
+for i in range(ring_count):
+    ro = (P["nozzle_exit_d"]/2.0) + 30.0 + i*22.0
+    ri = ro - 12.0
+    L = 40.0
+    r = Part.makeCylinder(ro, L)
+    h = Part.makeCylinder(ri, L + 0.2)
+    ring = r.cut(h)
+    ring.Placement = App.Placement(App.Vector(P["nozzle_cx"] + P["nozzle_l"]/2.0 - (i+1)*(L+6.0), 0, 0), rot_to_x())
+    rings.append(ring)
+if rings:
+    rings_shape = rings[0]
+    for r in rings[1:]:
+        rings_shape = rings_shape.fuse(r)
+    rings_obj = add_obj(rings_shape, "Nozzle_Rings")
+
+# =========================
+# 4) Trusses con detalle industrial (ribs, anclajes)
+# =========================
+truss_parts = []
+for k in range(P["truss_n"]):
+    ang = k * (360.0 / P["truss_n"])
+    y = P["truss_R_attach"] * math.cos(math.radians(ang))
+    z = P["truss_R_attach"] * math.sin(math.radians(ang))
+    # tubo principal (box) orientado hacia popa
+    L = P["truss_len"]
+    beam = Part.makeBox(L, P["truss_tube_w"], P["truss_tube_w"]) 
+    beam.Placement = App.Placement(App.Vector(P["reactor_cx"] - L/2.0, y - P["truss_tube_w"]/2.0, z - P["truss_tube_w"]/2.0), App.Rotation())
+    # añadir costillas/ribs al beam
+    ribs = None
+    for ri in range(P["truss_rib_n"]):
+        rx = P["reactor_cx"] - L/2.0 + (ri+1) * (L / (P["truss_rib_n"]+1))
+        rib = Part.makeBox(6.0, P["truss_tube_w"]+6.0, P["truss_rib_th"]) 
+        rib.Placement = App.Placement(App.Vector(rx - 3.0, y - (P["truss_tube_w"]+6.0)/2.0, z - P["truss_rib_th"]/2.0), App.Rotation())
+        if ribs is None:
+            ribs = rib
+        else:
+            ribs = ribs.fuse(rib)
+    if ribs:
+        beam = beam.fuse(ribs)
+    truss_parts.append(beam)
+
+truss_shape = truss_parts[0]
+for t in truss_parts[1:]:
+    truss_shape = truss_shape.fuse(t)
+truss_obj = add_obj(truss_shape, "Truss_Detailed")
+
+# =========================
+# 5) Alerones cortos y angulares (estilo asalto)
+# =========================
+# Creamos alas trapezoidales con sweep y rotacion (bastante simplificado)
+
+def make_angular_wing(x0, side=1, label="Wing"):
+    root = P["wing_root_w"]
+    tip = P["wing_tip_w"]
+    chord = P["wing_chord"]
+    thickness = P["wing_thickness"]
+    sweep = P["wing_sweep_deg"]
+    # Perfil en XZ
+    x_le = x0
+    x_te = x0 + chord
+    z = 0
+    p1 = App.Vector(x_le, 0, z + root/2.0)
+    p2 = App.Vector(x_te, 0, z + tip/2.0)
+    p3 = App.Vector(x_te, 0, z - tip/2.0)
+    p4 = App.Vector(x_le, 0, z - root/2.0)
+    wire = Part.makePolygon([p1,p2,p3,p4,p1])
+    face = Part.Face(wire)
+    wing_solid = face.extrude(App.Vector(0, side*(root - tip), 0))
+    # rotamos para dar inclinación de ataque
+    wing_solid.Placement = App.Placement(App.Vector(0,0,0), App.Rotation(X_AXIS, -sweep if side>0 else sweep))
+    return add_obj(wing_solid, label)
+
+wing_r = make_angular_wing(P["nose_len"] + 700.0, side=1, label="Wing_Right_Angular")
+wing_l = make_angular_wing(P["nose_len"] + 700.0, side=-1, label="Wing_Left_Angular")
+
+# =========================
+# 6) Propulsores secundarios laterales (tanques/boquillas)
+# =========================
+thr_r = make_tube_x(P["side_thruster_d"]+30.0, P["side_thruster_d"]-40.0, P["side_thruster_l"], cx=P["side_thruster_x"], cy=P["side_thruster_y"], cz=P["side_thruster_z"], label="SideThruster_Right_Tube")
+thr_l = make_tube_x(P["side_thruster_d"]+30.0, P["side_thruster_d"]-40.0, P["side_thruster_l"], cx=P["side_thruster_x"], cy=-P["side_thruster_y"], cz=P["side_thruster_z"], label="SideThruster_Left_Tube")
+# tapas/boquilla de salida
+thr_end_r = Part.makeCone((P["side_thruster_d"]-40.0)/2.0, (P["side_thruster_d"]+120.0)/2.0, 160.0)
+thr_end_r.Placement = App.Placement(App.Vector(P["side_thruster_x"] + P["side_thruster_l"]/2.0, P["side_thruster_y"], P["side_thruster_z"]), rot_to_x())
+thr_end_l = thr_end_r.copy()
+thr_end_l.Placement = App.Placement(App.Vector(P["side_thruster_x"] + P["side_thruster_l"]/2.0, -P["side_thruster_y"], P["side_thruster_z"]), rot_to_x())
+
+thr_end_r_obj = add_obj(thr_end_r, "SideThruster_Right_Noise")
+thr_end_l_obj = add_obj(thr_end_l, "SideThruster_Left_Noise")
+
+# =========================
+# 7) Blindajes tipo Solar Parker Probe (capas: externa TPS, gap, moderador interno)
+# =========================
+mod_inner_r = P["reactor_d"]/2.0 + P["shield_gap"]
+mod_outer_r = mod_inner_r + P["shield_inner_t"]
+mod_len = P["reactor_l"] + P["shield_extend"]
+mod_cx = P["reactor_cx"]
+mod_inner = Part.makeCylinder(mod_inner_r, mod_len)
+mod_outer = Part.makeCylinder(mod_outer_r, mod_len)
+mod_tube = mod_outer.cut(mod_inner)
+mod_tube.Placement = App.Placement(App.Vector(mod_cx - mod_len/2.0, 0, 0), rot_to_x())
+mod_obj = add_obj(mod_tube, "Shield_Moderator_Internal")
+
+# Capa externa TPS
+ext_inner_r = mod_outer_r + P["shield_gap"]
+ext_outer_r = ext_inner_r + P["shield_outer_t"]
+ext_len = mod_len + 200.0
+ext_inner = Part.makeCylinder(ext_inner_r, ext_len)
+ext_outer = Part.makeCylinder(ext_outer_r, ext_len)
+ext_tube = ext_outer.cut(ext_inner)
+ext_tube.Placement = App.Placement(App.Vector(mod_cx - ext_len/2.0, 0, 0), rot_to_x())
+ext_obj = add_obj(ext_tube, "Shield_TPS_External")
+
+# =========================
+# 8) Tanques auxiliares
+# =========================
+tank1 = make_cyl_x(P["tank_d"], P["tank_l"], cx=P["tank_cx"], cy=P["tank_cy"], cz=P["tank_cz"], label="Tank_Right")
+tank2 = make_cyl_x(P["tank_d"], P["tank_l"], cx=P["tank_cx"], cy=-P["tank_cy"], cz=P["tank_cz"], label="Tank_Left")
+
+# =========================
+# 9) Tren de aterrizaje simplificado
+# =========================
+def make_leg(x, y, z, L, d, label):
+    shaft = Part.makeCylinder(d/4.0, L)
+    foot = Part.makeCylinder(d/2.0, 30.0)
+    shaft.Placement = App.Placement(App.Vector(x - L/2.0, y, z), rot_to_x())
+    foot.Placement  = App.Placement(App.Vector(x + L/2.0 - 10.0, y, z - d/4.0), App.Rotation())
+    leg = shaft.fuse(foot)
+    return add_obj(leg, label)
+
+leg_f = make_leg(P["nose_len"] + 200.0, 0.0, -P["mid_d"]/2.0 + 60.0, P["leg_L_fold"], P["leg_foot_d"], "Leg_Nose")
+leg_r = make_leg(P["nose_len"] + 900.0, P["tank_cy"], -P["mid_d"]/2.0 + 60.0, P["leg_L_fold"], P["leg_foot_d"], "Leg_Right")
+leg_l = make_leg(P["nose_len"] + 900.0, -P["tank_cy"], -P["mid_d"]/2.0 + 60.0, P["leg_L_fold"], P["leg_foot_d"], "Leg_Left")
+
+# =========================
+# 10) Montaje final (part group)
+# =========================
+grp = doc.addObject("App::Part", "Destiny_Ship_Blindado")
+parts = [hull_obj_cut, cockpit_obj, reactor_obj, nozzle_obj, rings_obj, truss_obj, wing_r, wing_l, thr_r, thr_l, thr_end_r_obj, thr_end_l_obj, mod_obj, ext_obj, tank1, tank2, leg_f, leg_r, leg_l]
+for o in parts:
+    try:
+        grp.addObject(o)
+    except Exception:
+        pass
+
+# =========================
+# 11) Metadatos de material y etiquetas FEM (Solar Parker Probe style)
+# =========================
+def tag_material(obj, material_name, density, remarks=None):
+    try:
+        obj.addProperty("App::PropertyString","Material","Physics","Material asignado")
+        obj.addProperty("App::PropertyFloat","Density","Physics","Densidad kg/m^3")
+        obj.addProperty("App::PropertyString","FEM_Tag","Physics","Tag para mallas/FEM")
+    except Exception:
+        pass
+    obj.Material = material_name
+    obj.Density = float(density)
+    obj.FEM_Tag = remarks if remarks else ""
+
+# Asignaciones orientativas
+try:
+    tag_material(hull_obj_cut, "Ti-6Al-4V", 4500, "Hull structural - allow mesh refinement")
+    tag_material(cockpit_obj, "CFRP", 1600, "Integrated cockpit - composite shell")
+    tag_material(reactor_obj, "Estructural", 7800, "Reactor core - heavy")
+    tag_material(nozzle_obj, "Inconel", 8200, "High-temp nozzle")
+    tag_material(truss_obj, "Inconel/Ti", 8300, "Truss - fine mesh around ribs")
+    tag_material(mod_obj, "Hydrogen-Composite", 1000, "Internal moderator")
+    tag_material(ext_obj, "TPS-Alumina-Composite", 1800, "External TPS - Solar Parker style")
+    tag_material(tank1, "Al7075/Hydride", 2700, "Propellant tank - attach points")
+except Exception:
+    pass
+
+# =========================
+# 12) Recomputation y vistas
+# =========================
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except Exception:
+    pass
+
+print("Macro 'Destiny Propulsion Blindado' lista en el documento '{}'.".format(doc.Label))

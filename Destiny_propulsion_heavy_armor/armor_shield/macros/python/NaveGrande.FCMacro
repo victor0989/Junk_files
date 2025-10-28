@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+# Macro FreeCAD — Nave estilo Destiny con propulsor funcional (paramétrico)
+# Víctor — Versión corregida, lista para ejecutar
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+from math import sin, cos, pi
+
+def mm(m):
+    return float(m)*1000.0
+
+def ensure_doc(name="Nave_Destiny_Propulsor"):
+    doc = App.ActiveDocument
+    if doc is None:
+        doc = App.newDocument(name)
+    doc.Label = name
+    return doc
+
+doc = ensure_doc()
+
+# Colores
+COL_HULL=(0.70,0.75,0.80); COL_ADAPTER=(0.55,0.60,0.65); COL_FRONT=(0.75,0.80,0.85)
+COL_REAR=(0.60,0.65,0.70); COL_PROP=(0.35,0.40,0.50); COL_ION=(0.2,0.4,0.9)
+COL_CHEM=(0.8,0.6,0.2); COL_MODULE=(0.30,0.35,0.40); COL_RADIATOR=(0.85,0.10,0.10)
+COL_DOCK=(0.2,0.8,0.6)
+
+# Parámetros
+P = {
+    "Lc":22.0,"Dc":7.0,
+    "Lf":5.0,"Df":6.0,"L_adapter_front":0.5,
+    "Lt":8.0,"Dt":6.0,"L_adapter_rear":0.5,
+    "Lp_cyl":4.0,"Lp_bell":3.0,"Dp":5.0,
+    "Lm":7.0,"Wm":4.0,"Hm":3.0,
+    "Lrad":6.0,"Wrad":2.0,"Thrad":0.15,
+    "Ion_count":10,"Ion_D":0.6,"Ion_L":1.0,"Ion_ring_R":3.2,
+    "Bell_D_exit":3.2,"Bell_D_throat":1.2,"Bell_L":2.4,
+    "Dock_D":1.6,"Dock_L":0.6
+}
+
+# Ajustar L_total exacto
+P["L_total"] = P["Lc"] + P["L_adapter_front"] + P["Lf"] + P["L_adapter_rear"] + P["Lt"] + P["Lp_cyl"] + P["Lp_bell"]
+
+# Funciones de primitivas
+def make_cylinder(name,D,L,x0,color):
+    r=mm(D/2.0); h=mm(L)
+    shape=Part.makeCylinder(r,h)
+    obj=doc.addObject("Part::Feature",name); obj.Shape=shape
+    obj.Placement=App.Placement(App.Vector(mm(x0),0,0),App.Rotation(App.Vector(0,1,0),90))
+    if App.GuiUp: Gui.ActiveDocument.getObject(obj.Name).ShapeColor=color
+    return obj
+
+def make_frustum(name,D1,D2,L,x0,color):
+    r1=mm(D1/2.0); r2=mm(D2/2.0); h=mm(L)
+    shape=Part.makeCone(r1,r2,h)
+    obj=doc.addObject("Part::Feature",name); obj.Shape=shape
+    obj.Placement=App.Placement(App.Vector(mm(x0),0,0),App.Rotation(App.Vector(0,1,0),90))
+    if App.GuiUp: Gui.ActiveDocument.getObject(obj.Name).ShapeColor=color
+    return obj
+
+def make_box(name,L,W,H,x_center,y_center,z_center,color):
+    Lm=mm(L); Wm=mm(W); Hm=mm(H)
+    shape=Part.makeBox(Lm,Wm,Hm)
+    obj=doc.addObject("Part::Feature",name); obj.Shape=shape
+    obj.Placement=App.Placement(App.Vector(mm(x_center)-Lm/2,mm(y_center)-Wm/2,mm(z_center)-Hm/2),App.Rotation())
+    if App.GuiUp: Gui.ActiveDocument.getObject(obj.Name).ShapeColor=color
+    return obj
+
+def make_disk(name,D,T,x0,color,hollow=False,D_inner=None):
+    r=mm(D/2.0); h=mm(T); base=Part.makeCylinder(r,h)
+    if hollow and D_inner: base=base.cut(Part.makeCylinder(mm(D_inner/2.0),h+1.0))
+    obj=doc.addObject("Part::Feature",name); obj.Shape=base
+    obj.Placement=App.Placement(App.Vector(mm(x0),0,0),App.Rotation(App.Vector(0,1,0),90))
+    if App.GuiUp: Gui.ActiveDocument.getObject(obj.Name).ShapeColor=color
+    return obj
+
+def make_small_cylinder(name,D,L,x_center,y_center,z_center,color,axis="X"):
+    r=mm(D/2.0); h=mm(L); shape=Part.makeCylinder(r,h)
+    obj=doc.addObject("Part::Feature",name); obj.Shape=shape
+    rot=App.Rotation()
+    if axis=="X": rot=App.Rotation(App.Vector(0,1,0),90)
+    elif axis=="Y": rot=App.Rotation(App.Vector(1,0,0),-90)
+    obj.Placement=App.Placement(App.Vector(mm(x_center),mm(y_center),mm(z_center)),rot)
+    if App.GuiUp: Gui.ActiveDocument.getObject(obj.Name).ShapeColor=color
+    return obj
+
+# Posiciones
+Lc=P["Lc"]; Dc=P["Dc"]
+x_central_start=-Lc/2; x_central_end=Lc/2
+x_front_adapter_start=x_central_end; x_front_cyl_start=x_front_adapter_start+P["L_adapter_front"]
+x_rear_adapter_end=x_central_start; x_rear_adapter_start=x_rear_adapter_end-P["L_adapter_rear"]
+x_rear_cyl_start=x_rear_adapter_start-P["Lt"]
+x_prop_cyl_start=x_rear_cyl_start-P["Lp_cyl"]
+x_prop_bell_start=x_prop_cyl_start-P["Lp_bell"]
+
+# Componentes principales
+hull=make_cylinder("Cuerpo_Central",Dc,Lc,x_central_start,COL_HULL)
+front_adapter=make_frustum("Adaptador_Frontal",Dc,P["Df"],P["L_adapter_front"],x_front_adapter_start,COL_ADAPTER)
+front=make_cylinder("Seccion_Frontal",P["Df"],P["Lf"],x_front_cyl_start,COL_FRONT)
+rear_adapter=make_frustum("Adaptador_Trasero",Dc,P["Dt"],P["L_adapter_rear"],x_rear_adapter_start,COL_ADAPTER)
+rear=make_cylinder("Seccion_Trasera",P["Dt"],P["Lt"],x_rear_cyl_start,COL_REAR)
+prop_cyl=make_cylinder("Modulo_Propulsion_Cilindro",P["Dp"],P["Lp_cyl"],x_prop_cyl_start,COL_PROP)
+prop_bell=make_frustum("Tobera_Propulsion",P["Bell_D_throat"],P["Bell_D_exit"],P["Bell_L"],x_prop_bell_start,COL_CHEM)
+dock=make_disk("Puerto_Acoplamiento",P["Dock_D"],P["Dock_L"],x_rear_cyl_start+P["Lt"]-P["Dock_L"],COL_DOCK,hollow=True,D_inner=P["Dock_D"]*0.6)
+
+# Módulos laterales
+y_module_center=9.0-P["Wm"]/2.0; x_module_center=0.0; z_module_center=0.0
+mod_left=make_box("Modulo_Lateral_Izq",P["Lm"],P["Wm"],P["Hm"],x_module_center,+y_module_center,z_module_center,COL_MODULE)
+mod_right=make_box("Modulo_Lateral_Der",P["Lm"],P["Wm"],P["Hm"],x_module_center,-y_module_center,z_module_center,COL_MODULE)
+
+# Radiadores
+y_rad_left=9.0+P["Thrad"]/2.0; y_rad_right=-(9.0+P["Thrad"]/2.0)
+x_rad_center=x_module_center+(P["Lm"]/2-P["Lrad"]/2)
+rad_left=make_box("Radiador_Izq",P["Lrad"],P["Thrad"],P["Wrad"],x_rad_center,y_rad_left,0.0,COL_RADIATOR)
+rad_right=make_box("Radiador_Der",P["Lrad"],P["Thrad"],P["Wrad"],x_rad_center,y_rad_right,0.0,COL_RADIATOR)
+
+# Motores iónicos
+ion_objs=[]
+x_ion_center=x_rear_cyl_start+P["Lt"]-0.8
+for i in range(P["Ion_count"]):
+    theta=2*pi*i/P["Ion_count"]
+    y=P["Ion_ring_R"]*cos(theta); z=P["Ion_ring_R"]*sin(theta)
+    ion_objs.append(make_small_cylinder(f"Ion_{i+1:02d}",P["Ion_D"],P["Ion_L"],x_ion_center,y,z,COL_ION,"X"))
+
+# Cámara de combustión
+injector=make_cylinder("Camara_Combustion",P["Bell_D_throat"],0.8,x_prop_cyl_start+0.2,COL_CHEM)
+
+# Grupos
+grp_hull=doc.addObject("App::DocumentObjectGroup","01_Estructura")
+for o in [hull,front_adapter,front,rear_adapter,rear]: grp_hull.addObject(o)
+grp_prop=doc.addObject("App::DocumentObjectGroup","02_Propulsion")
+for o in [prop_cyl,prop_bell,injector]+ion_objs: grp_prop.addObject(o)
+grp_side=doc.addObject("App::DocumentObjectGroup","03_Modulos_Laterales")
+for o in [mod_left,mod_right,rad_left,rad_right]: grp_side.addObject(o)
+grp_ports=doc.addObject("App::DocumentObjectGroup","04_Puertos"); grp_ports.addObject(dock)
+
+# Compuesto final
+all_shapes=[hull,front_adapter,front,rear_adapter,rear,prop_cyl,prop_bell,injector,dock,mod_left,mod_right,rad_left,rad_right]+ion_objs
+compound=Part.Compound([o.Shape for o in all_shapes])
+comp_obj=doc.addObject("Part::Feature","Nave_Compuesta"); comp_obj.Shape=compound
+
+if App.GuiUp:
+    v=Gui.ActiveDocument.getObject(comp_obj.Name)
+    v.DisplayMode="Shaded"
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+
+doc.recompute()

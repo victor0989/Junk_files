@@ -1,0 +1,162 @@
+# -*- coding: utf-8 -*-
+# Macro FreeCAD: Nave espacial mediana con propulsión moderna (dimensiones en mm)
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import Draft
+
+DOC_NAME = "NaveMediana_PropulsionModerna"
+if App.ActiveDocument is None or App.ActiveDocument.Name != DOC_NAME:
+    App.newDocument(DOC_NAME)
+doc = App.ActiveDocument
+
+# Utilidad: rotación alrededor de ejes
+import math
+def rot(axis, angle_deg):
+    ang = math.radians(angle_deg)
+    if axis.lower() == 'x':
+        return App.Rotation(App.Vector(1,0,0), angle_deg)
+    if axis.lower() == 'y':
+        return App.Rotation(App.Vector(0,1,0), angle_deg)
+    return App.Rotation(App.Vector(0,0,1), angle_deg)
+
+# 1) Cuerpo central 12×6×4 m
+body_L, body_W, body_H = 12000, 6000, 4000
+cuerpo = Part.makeBox(body_L, body_W, body_H)
+cuerpo_obj = doc.addObject("Part::Feature", "CuerpoCentral")
+cuerpo_obj.Shape = cuerpo
+cuerpo_obj.ViewObject.DisplayMode = "Shaded"
+
+# 2) Cabina / Puente 3×3×2 m (en el frontal y sobre el techo)
+cab_L, cab_W, cab_H = 3000, 3000, 2000
+cab_x = 1000                      # ligeramente retrasada del morro
+cab_y = (body_W - cab_W) / 2      # centrada en ancho
+cab_z = body_H                    # sobre el techo
+cabina = Part.makeBox(cab_L, cab_W, cab_H)
+cabina.translate(App.Vector(cab_x, cab_y, cab_z))
+cabina_obj = doc.addObject("Part::Feature", "CabinaPuente")
+cabina_obj.Shape = cabina
+
+# 3) Toberas principales (2) cilindros Ø1.5 m, L=2 m, orientadas a +X en la popa
+# Diámetro 1500 → radio 750; longitud 2000
+main_r, main_L = 750, 2000
+# Base de las toberas anclada a la cara trasera del cuerpo (x = body_L - main_L)
+base_x = body_L - main_L
+# Alturas y posiciones laterales
+main_z = 1500  # altura media baja
+main_y_offsets = [1500, body_W - 1500 - (2*main_r)]  # simétricas
+main_thrusters = []
+for i, y0 in enumerate(main_y_offsets):
+    cyl = Part.makeCylinder(main_r, main_L)
+    # Por defecto extruye en +Z; rotamos para que extruya en +X
+    shp = cyl
+    # Rotar 90° alrededor de Y para alinear eje con X
+    shp.rotate(App.Vector(0,0,0), App.Vector(0,1,0), 90)
+    # Colocar con su base en base_x, y y0, z main_z
+    # Tras la rotación, el cilindro se extiende a lo largo de X desde su "base" en la posición colocada
+    shp.translate(App.Vector(base_x, y0 + main_r, main_z))
+    obj = doc.addObject("Part::Feature", f"ToberaPrincipal_{i+1}")
+    obj.Shape = shp
+    main_thrusters.append(obj)
+
+# 4) Toberas auxiliares (4) cilindros Ø0.8 m, L=1 m, orientadas ±Y en los costados
+aux_r, aux_L = 400, 1000
+# Dos por lado, a distintas x; altura media
+aux_z = 2500
+aux_x_positions = [3500, 7000]
+aux_thrusters = []
+for side, y_sign in [('Izq', -1), ('Der', +1)]:
+    y_base = 0 if y_sign < 0 else body_W
+    for j, x0 in enumerate(aux_x_positions):
+        cyl = Part.makeCylinder(aux_r, aux_L)
+        # Rotar 90° alrededor de X para alinear eje con Y
+        shp = cyl
+        shp.rotate(App.Vector(0,0,0), App.Vector(1,0,0), 90)
+        # Si apunta hacia +Y, base en la pared; si hacia -Y, desplazamos hacia fuera
+        if y_sign > 0:
+            # Apunta +Y: base pegada a y = body_W
+            pos = App.Vector(x0, y_base, aux_z)
+        else:
+            # Apunta -Y: colocamos base justo fuera de y=0, restando la longitud
+            pos = App.Vector(x0, y_base - aux_L, aux_z)
+        shp.translate(pos)
+        obj = doc.addObject("Part::Feature", f"ToberaAux_{side}_{j+1}")
+        obj.Shape = shp
+        aux_thrusters.append(obj)
+
+# 5) Estabilizadores laterales 5×1×0.5 m (cajas delgadas)
+stab_L, stab_W, stab_H = 5000, 1000, 500
+# Colocados hacia la mitad trasera y a media altura
+stab_z = (body_H - stab_H) / 2
+stab_x = 3500
+# Izquierdo (y negativo, sobresale hacia fuera)
+stab_left = Part.makeBox(stab_L, stab_W, stab_H)
+stab_left.translate(App.Vector(stab_x, -stab_W, stab_z))
+stab_left_obj = doc.addObject("Part::Feature", "Estabilizador_Izq")
+stab_left_obj.Shape = stab_left
+
+# Derecho (y positivo, pegado al costado derecho)
+stab_right = Part.makeBox(stab_L, stab_W, stab_H)
+stab_right.translate(App.Vector(stab_x, body_W, stab_z))
+stab_right_obj = doc.addObject("Part::Feature", "Estabilizador_Der")
+stab_right_obj.Shape = stab_right
+
+# 6) Fusión opcional de todas las piezas en un solo sólido
+to_fuse = [cuerpo_obj, cabina_obj] + main_thrusters + aux_thrusters + [stab_left_obj, stab_right_obj]
+base = to_fuse[0].Shape
+for part in to_fuse[1:]:
+    base = base.fuse(part.Shape)
+fused = doc.addObject("Part::Feature", "Nave_Fusion")
+fused.Shape = base
+
+# 7) Etiquetas 3D (Draft Text) para referencia visual
+try:
+    txt_size = 300  # tamaño de texto en mm
+    Draft.makeText(["Cuerpo central"], point=App.Vector(body_L*0.5, body_W*0.5, body_H+600), screen=True)
+    Draft.makeText(["Cabina / Puente"], point=App.Vector(cab_x+cab_L/2, cab_y+cab_W/2, cab_z+cab_H+600), screen=True)
+    Draft.makeText(["Toberas principales"], point=App.Vector(base_x+main_L/2, body_W/2, main_z-600), screen=True)
+    Draft.makeText(["Toberas auxiliares"], point=App.Vector(6000, -1500, aux_z), screen=True)
+    Draft.makeText(["Estabilizadores laterales"], point=App.Vector(stab_x+stab_L/2, body_W+1500, stab_z+stab_H/2), screen=True)
+except Exception:
+    pass  # Si Draft no está disponible en modo headless
+
+# 8) Vista y recomputación
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.fitAll()
+except Exception:
+    pass
+
+print("Modelo generado: Nave_Fusion. Dimensiones en mm.")
+import TechDraw
+
+doc = App.ActiveDocument
+page = doc.addObject('TechDraw::DrawPage', 'PaginaOrto')
+template = doc.addObject('TechDraw::DrawSVGTemplate', 'PlantillaA4')
+template.Template = TechDraw.getStandardTemplate('A4_Landscape.svg')
+page.Template = template
+
+# Crear un objeto de vista desde el sólido fusionado
+nave = doc.getObject('Nave_Fusion')
+view_front = doc.addObject('TechDraw::DrawViewPart', 'Vista_Frontal')
+view_front.Source = [nave]
+view_front.Direction = App.Vector(1,0,0)      # mirando el morro (proyección ortográfica)
+view_front.Scale = 1/200.0
+
+view_top = doc.addObject('TechDraw::DrawViewPart', 'Vista_Superior')
+view_top.Source = [nave]
+view_top.Direction = App.Vector(0,0,1)        # vista en planta
+view_top.Scale = 1/200.0
+
+view_side = doc.addObject('TechDraw::DrawViewPart', 'Vista_Lateral')
+view_side.Source = [nave]
+view_side.Direction = App.Vector(0,1,0)       # vista lateral
+view_side.Scale = 1/200.0
+
+page.addView(view_front)
+page.addView(view_top)
+page.addView(view_side)
+
+doc.recompute()
+print("Página TechDraw creada con vistas: frontal, superior y lateral.")
